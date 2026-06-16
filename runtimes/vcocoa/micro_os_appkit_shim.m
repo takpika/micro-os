@@ -343,6 +343,41 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
 }
 
 @implementation MicroOSBackingView
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        // Pointer hover (iPad trackpad / mouse, and Apple Pencil hover on M2+
+        // iPads) -> -mouseMoved:, so hover-driven UI such as menu highlights works
+        // like on a Mac. Harmless where there is no pointer (plain iPhone touch).
+        UIHoverGestureRecognizer *hover =
+            [[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(microOSHover:)];
+        [self addGestureRecognizer:hover];
+    }
+    return self;
+}
+- (void)microOSHover:(UIHoverGestureRecognizer *)g {
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan:
+        case UIGestureRecognizerStateChanged:
+            [self.owner mouseMoved:[NSEvent microOSMouseEventAt:[self logicalPointForLocation:[g locationInView:self]]]];
+            break;
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled: {
+            // Hover also "ends" the instant a click begins (the pointer makes
+            // contact). Only treat it as the pointer LEAVING — and clear the cursor
+            // — when it is actually outside the surface; otherwise this mouseExited
+            // would wipe the click's -mouseDown: cursor before the game's frame loop
+            // reads g_click_pending, making the click miss ("need to click twice").
+            CGPoint p = [g locationInView:self];
+            if (!CGRectContainsPoint(self.bounds, p)) {
+                [self.owner mouseExited:[NSEvent microOSMouseEventAt:CGPointMake(-1, -1)]];
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (self.hostedLayer) {
@@ -364,7 +399,9 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
     [self layoutIfNeeded];
 }
 - (CGPoint)logicalPointFor:(UITouch *)t {
-    CGPoint p = [t locationInView:self];
+    return [self logicalPointForLocation:[t locationInView:self]];
+}
+- (CGPoint)logicalPointForLocation:(CGPoint)p {
     CGFloat bw = self.bounds.size.width, bh = self.bounds.size.height;
     CGFloat lw = self.logical.width, lh = self.logical.height;
     if (bw <= 0 || bh <= 0 || lw <= 0 || lh <= 0) return CGPointMake(-1, -1);

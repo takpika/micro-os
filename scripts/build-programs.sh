@@ -182,6 +182,12 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
       if [ -z "$ch" ]; then
         echo "toybox: unmappable build error ($plat):" >&2
         grep -iE "error:|Undefined symbols|referenced from" "$work/round.log" | sort -u | head -15 >&2
+        # The above matches only compile/link errors; a make/host-tool/config
+        # failure leaves nothing to print. Dump the tail of the build log so the
+        # real cause is visible (e.g. on CI, where the log is otherwise hidden).
+        echo "----- toybox round.log (tail) -----" >&2
+        tail -n 120 "$work/round.log" >&2
+        echo "----- end round.log -----" >&2
         exit 1
       fi
     done

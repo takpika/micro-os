@@ -1,0 +1,13 @@
+# Build output and caches — never committed
+.build/
+# payload/ is selectively ignored by payload/.gitignore (built dylibs + user
+# .setup files are local; README.md and example.setup are committed).
+
+# macOS
+.DS_Store
+# Xcode default build dir (wm target intermediates)
+build/
+
+# Local, untracked program build recipes (private programs that must not be
+# committed). build-programs.sh sources scripts/local/*.sh to register them.
+scripts/local/

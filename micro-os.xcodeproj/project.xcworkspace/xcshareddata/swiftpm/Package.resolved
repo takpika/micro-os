@@ -1,0 +1,15 @@
+{
+  "originHash" : "14944277836f43bbf0624431ab0781c7f8829af3ccb7cef4f25eeca620f8915f",
+  "pins" : [
+    {
+      "identity" : "swiftui-window",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/takpika/swiftui-window.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "61e06227addd10b6e357ab4ee23819a6b5416383"
+      }
+    }
+  ],
+  "version" : 3
+}

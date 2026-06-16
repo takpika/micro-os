@@ -1,0 +1,5 @@
+# Everything dropped here is local. Only README.md is committed so the
+# folder exists in the repo.
+*
+!.gitignore
+!README.md

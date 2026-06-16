@@ -6,14 +6,23 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		000000000000000200000011 /* wm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000200000001 /* wm.swift */; };
+		000000000000000200000012 /* MicroOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000200000002 /* MicroOS.swift */; };
+		000000000000000200000013 /* SwiftUIWindow in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000200000401 /* SwiftUIWindow */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* swiftui-os.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "swiftui-os.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* micro-os.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "micro-os.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000121 /* wm.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = wm.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000200000001 /* wm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = wm.swift; sourceTree = "<group>"; };
+		000000000000000200000002 /* MicroOS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicroOS.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		000000000000000000000010 /* swiftui-os */ = {
+		000000000000000000000010 /* micro-os */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "swiftui-os";
+			path = "micro-os";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -24,13 +33,21 @@
 			files = (
 			);
 		};
+		000000000000000200000030 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				000000000000000200000013 /* SwiftUIWindow in Frameworks */,
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000010 /* swiftui-os */,
+				000000000000000000000010 /* micro-os */,
+				000000000000000200000003 /* apps */,
+				000000000000000200000004 /* include */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -38,31 +55,74 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* swiftui-os.app */,
+				000000000000000000000120 /* micro-os.app */,
+				000000000000000000000121 /* wm.dylib */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		000000000000000200000003 /* apps */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000300000010 /* wm */,
+			);
+			path = apps;
+			sourceTree = "<group>";
+		};
+		000000000000000200000004 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000200000002 /* MicroOS.swift */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		000000000000000300000010 /* wm */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000200000001 /* wm.swift */,
+			);
+			path = wm;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* swiftui-os */ = {
+		000000000000000100000000 /* micro-os */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "swiftui-os" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "micro-os" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
 				000000000000000140000000 /* Resources */,
+				000000000000000160000000 /* Copy Payload */,
 			);
 			buildRules = (
 			);
 			fileSystemSynchronizedGroups = (
-				000000000000000000000010 /* swiftui-os */,
+				000000000000000000000010 /* micro-os */,
 			);
-			name = "swiftui-os";
+			name = "micro-os";
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* swiftui-os.app */;
+			productReference = 000000000000000000000120 /* micro-os.app */;
 			productType = "com.apple.product-type.application";
+		};
+		000000000000000200000000 /* wm */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000200000100 /* Build configuration list for PBXNativeTarget "wm" */;
+			buildPhases = (
+				000000000000000200000040 /* Sources */,
+				000000000000000200000030 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			name = wm;
+			packageProductDependencies = (
+				000000000000000200000401 /* SwiftUIWindow */,
+			);
+			productName = wm;
+			productReference = 000000000000000000000121 /* wm.dylib */;
+			productType = "com.apple.product-type.library.dynamic";
 		};
 /* End PBXNativeTarget section */
 
@@ -77,9 +137,12 @@
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
 					};
+					000000000000000200000000 = {
+						CreatedOnToolsVersion = 26.3;
+					};
 				};
 			};
-			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "swiftui-os" */;
+			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "micro-os" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -88,12 +151,16 @@
 			);
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				000000000000000200000400 /* XCRemoteSwiftPackageReference "swiftui-window" */,
+			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* swiftui-os */,
+				000000000000000100000000 /* micro-os */,
+				000000000000000200000000 /* wm */,
 			);
 		};
 /* End PBXProject section */
@@ -106,16 +173,39 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		000000000000000160000000 /* Copy Payload */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			inputPaths = (
+				"$(SRCROOT)/scripts/copy-payload.sh",
+			);
+			name = "Copy Payload";
+			shellPath = /bin/bash;
+			shellScript = (
+				"bash \"$SRCROOT/scripts/copy-payload.sh\"",
+				"",
+			);
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		000000000000000120000000 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
 			);
 		};
+		000000000000000200000040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				000000000000000200000012 /* MicroOS.swift in Sources */,
+				000000000000000200000011 /* wm.swift in Sources */,
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		000000000000000011000000 /* Debug configuration for PBXProject "swiftui-os" */ = {
+		000000000000000011000000 /* Debug configuration for PBXProject "micro-os" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -155,7 +245,7 @@
 				DRIVERKIT_DEPLOYMENT_TARGET = 27.0;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -170,7 +260,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -185,7 +275,7 @@
 			};
 			name = Debug;
 		};
-		000000000000000012000000 /* Release configuration for PBXProject "swiftui-os" */ = {
+		000000000000000012000000 /* Release configuration for PBXProject "micro-os" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -225,7 +315,7 @@
 				DRIVERKIT_DEPLOYMENT_TARGET = 27.0;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -234,7 +324,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
@@ -247,21 +337,26 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "swiftui-os" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "micro-os" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7X8BLQTS87;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = microOS;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -269,7 +364,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:identifier)";
+				PRODUCT_BUNDLE_IDENTIFIER = "jp.takpika.micro-os";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -284,21 +379,26 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "swiftui-os" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "micro-os" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7X8BLQTS87;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = microOS;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -306,7 +406,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:identifier)";
+				PRODUCT_BUNDLE_IDENTIFIER = "jp.takpika.micro-os";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -321,26 +421,101 @@
 			};
 			name = Release;
 		};
+		000000000000000200000101 /* Debug configuration for PBXNativeTarget "wm" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7X8BLQTS87;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_DYLIB_INSTALL_NAME = "@rpath/$(EXECUTABLE_PATH)";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MACH_O_TYPE = mh_dylib;
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "-Wl,-undefined,dynamic_lookup";
+				PRODUCT_BUNDLE_IDENTIFIER = "jp.takpika.micro-os.wm";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		000000000000000200000102 /* Release configuration for PBXNativeTarget "wm" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7X8BLQTS87;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_DYLIB_INSTALL_NAME = "@rpath/$(EXECUTABLE_PATH)";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MACH_O_TYPE = mh_dylib;
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "-Wl,-undefined,dynamic_lookup";
+				PRODUCT_BUNDLE_IDENTIFIER = "jp.takpika.micro-os.wm";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		000000000000000010000000 /* Build configuration list for PBXProject "swiftui-os" */ = {
+		000000000000000010000000 /* Build configuration list for PBXProject "micro-os" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000011000000 /* Debug configuration for PBXProject "swiftui-os" */,
-				000000000000000012000000 /* Release configuration for PBXProject "swiftui-os" */,
+				000000000000000011000000 /* Debug configuration for PBXProject "micro-os" */,
+				000000000000000012000000 /* Release configuration for PBXProject "micro-os" */,
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "swiftui-os" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "micro-os" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "swiftui-os" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "swiftui-os" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "micro-os" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "micro-os" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		000000000000000200000100 /* Build configuration list for PBXNativeTarget "wm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000200000101 /* Debug configuration for PBXNativeTarget "wm" */,
+				000000000000000200000102 /* Release configuration for PBXNativeTarget "wm" */,
 			);
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		000000000000000200000400 /* XCRemoteSwiftPackageReference "swiftui-window" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/takpika/swiftui-window.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		000000000000000200000401 /* SwiftUIWindow */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 000000000000000200000400 /* XCRemoteSwiftPackageReference "swiftui-window" */;
+			productName = SwiftUIWindow;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

@@ -24,9 +24,11 @@ echo "==> micro-os CI: building payload in $REPO"
 # unverified, so neither is included by default.
 DEMOS="${MICRO_OS_CI_DEMOS:-demo-program vcocoa-todo}"
 
-# Build both device + simulator slices so any workflow action (archive or test)
-# finds its slice. Override with e.g. PLATFORMS=iphoneos for a device-only run.
-export PLATFORMS="${PLATFORMS:-iphoneos iphonesimulator}"
+# This workflow archives for iOS device, so build only the iphoneos slice — the
+# simulator slice would just double the (toybox) build time for nothing. If you
+# add a simulator-based action (e.g. Test), set PLATFORMS="iphoneos iphonesimulator"
+# in the workflow's environment variables.
+export PLATFORMS="${PLATFORMS:-iphoneos}"
 
 # toybox's build (scripts/portability.sh) uses `gsed` when present and otherwise
 # falls back to BSD `sed` — but its generator scripts are GNU-sed-only, so the BSD

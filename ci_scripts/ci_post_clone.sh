@@ -28,6 +28,16 @@ DEMOS="${MICRO_OS_CI_DEMOS:-demo-program vcocoa-todo}"
 # finds its slice. Override with e.g. PLATFORMS=iphoneos for a device-only run.
 export PLATFORMS="${PLATFORMS:-iphoneos iphonesimulator}"
 
+# toybox's build (scripts/portability.sh) uses `gsed` when present and otherwise
+# falls back to BSD `sed` — but its generator scripts are GNU-sed-only, so the BSD
+# fallback dies ("invalid command code"). macOS ships only BSD sed, so install GNU
+# sed; toybox then auto-detects `gsed`. (build-programs.sh's own `sed -i ''` keeps
+# using BSD /usr/bin/sed and is unaffected.)
+if ! command -v gsed >/dev/null 2>&1; then
+  echo "==> micro-os CI: installing GNU sed (toybox build prerequisite)"
+  brew install gnu-sed
+fi
+
 # wm is built via `xcodebuild -target wm`, which does NOT resolve Swift packages
 # on its own. Xcode Cloud hasn't resolved them yet at post-clone time, so resolve
 # SwiftUIWindow up front (into the project's default DerivedData, which the wm

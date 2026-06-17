@@ -7,14 +7,22 @@
 // in Debug the host code lived in a debug *dylib*.) So this framework provides
 // the symbols from a dylib that dyld *does* search. The app dlopen()s it with
 // RTLD_GLOBAL at boot, before any program loads, so every program's micro_os_*
-// import binds here. Each function is a thin forwarder to the real implementation
-// in the main executable, found once via dlsym(RTLD_MAIN_ONLY) (the executable
-// exports them via -rdynamic).
+// import binds here. Each function is a thin forwarder to the real implementation,
+// looked up once through a resolver the app installs at boot (see
+// micro_os_abi_set_resolver below).
 #include "micro_os.h"
-#include <dlfcn.h>
 
-// Cached pointer to the real implementation of `name` in the main executable.
-#define IMPL(name) ({ static void *fp; if (!fp) fp = dlsym(RTLD_MAIN_ONLY, #name); fp; })
+// The app installs a resolver mapping a host-ABI symbol name to its real
+// implementation. We must NOT look it up from here ourselves: on device dyld
+// won't resolve these against the main executable; dlsym(RTLD_MAIN_ONLY) misses
+// them in Debug (the host code lives in the debug dylib, not the executable);
+// and RTLD_DEFAULT could match our own forwarder. The app's resolver uses
+// RTLD_SELF, which finds the host code in the app's own image in every config.
+static void *(*g_resolve)(const char *name);
+void micro_os_abi_set_resolver(void *(*resolver)(const char *name)) { g_resolve = resolver; }
+
+// Cached pointer to the real implementation of `name`.
+#define IMPL(name) ({ static void *fp; if (!fp && g_resolve) fp = g_resolve(#name); fp; })
 
 int32_t micro_os_pid(void) { return ((int32_t(*)(void))IMPL(micro_os_pid))(); }
 void micro_os_stdout(const char *t) { ((void(*)(const char*))IMPL(micro_os_stdout))(t); }

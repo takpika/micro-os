@@ -1,6 +1,12 @@
 import SwiftUI
 import Darwin
 
+// Implemented in micro_os_abi_resolve.c (same target): hands MicroOSABI a
+// resolver that returns the kernel's @_cdecl host implementations by direct
+// reference, so its forwarders need no runtime symbol lookup.
+@_silgen_name("micro_os_install_resolver")
+private func micro_os_install_resolver(_ abiHandle: UnsafeMutableRawPointer?)
+
 @main
 struct MicroOSApp: App {
     @StateObject private var kernel = MicroKernel()
@@ -47,16 +53,6 @@ struct MicroOSApp: App {
     /// the ABI ships as MicroOSABI.framework and must be in the global namespace
     /// before any program dlopen()s. Its thin forwarders then call the real
     /// implementations in this executable.
-    // Resolver handed to MicroOSABI: maps a host-ABI symbol name to its real
-    // implementation in THIS image. RTLD_SELF searches the caller's own image —
-    // where HostExports lives (the executable in Release, the debug dylib in
-    // Debug) — so it works in every configuration, unlike RTLD_MAIN_ONLY which
-    // only sees the main executable.
-    private static let hostABIResolver: @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer? = { name in
-        guard let name else { return nil }
-        return dlsym(UnsafeMutableRawPointer(bitPattern: -3), name)   // RTLD_SELF
-    }
-
     private func loadHostABIFramework() {
         guard let frameworks = Bundle.main.privateFrameworksPath else { return }
         let path = "\(frameworks)/MicroOSABI.framework/MicroOSABI"
@@ -64,16 +60,10 @@ struct MicroOSApp: App {
             if let err = dlerror() { NSLog("micro-os: MicroOSABI load failed: %s", err) }
             return
         }
-        // Hand the framework a resolver into our own image so its forwarders can
-        // reach the real micro_os_* implementations (we can't be resolved by name
-        // from the framework on device — see micro_os_abi.c).
-        guard let sym = dlsym(handle, "micro_os_abi_set_resolver") else {
-            NSLog("micro-os: micro_os_abi_set_resolver missing")
-            return
-        }
-        typealias SetResolver = @convention(c) (
-            @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?) -> Void
-        unsafeBitCast(sym, to: SetResolver.self)(Self.hostABIResolver)
+        // Install the resolver (defined in micro_os_abi_resolve.c) so MicroOSABI's
+        // forwarders reach the kernel's @_cdecl implementations by direct
+        // reference — no dlsym, which is unreliable across configs on device.
+        micro_os_install_resolver(handle)
     }
 
     /// The kernel's only boot duty is to start init (PID 1). Everything else —

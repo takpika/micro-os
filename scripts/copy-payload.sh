@@ -94,3 +94,31 @@ for xcf in "$SOURCE_DIR"/*.xcframework; do
 done
 
 echo "payload -> $slices framework(s) embedded in Frameworks/ for $PLATFORM"
+
+# 3. Pooled programs. A multicall program that spawns instances of *itself* (the
+# toybox shell forks children that are also toybox) needs each live instance to
+# have its own copy of the image's globals (toys/this/toybuf). On the simulator
+# the loader gets that by dlopen'ing a private copy in a temp dir; on a real
+# device code signing forbids executing any image outside the signed app bundle,
+# so instead we ship extra signed copies here and the loader hands one out per
+# instance (each a distinct realpath -> distinct dyld image -> distinct __DATA).
+# Single-instance programs (init, wm, the apps) never collide and get no pool.
+POOL_PROGRAMS="${POOL_PROGRAMS:-toybox}"
+POOL_SIZE="${POOL_SIZE:-16}"
+for name in $POOL_PROGRAMS; do
+  src="$FW_DIR/$name.framework"
+  rm -rf "$FW_DIR/$name-pool-"*.framework   # drop stale copies from a prior build
+  [ -d "$src" ] || continue
+  for i in $(seq 1 "$POOL_SIZE"); do
+    dst="$FW_DIR/$name-pool-$i.framework"
+    cp -R "$src" "$dst"
+    # Unique bundle id per copy so App Store validation sees no duplicate ids.
+    plist="$dst/Info.plist"
+    if [ -f "$plist" ]; then
+      /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier jp.takpika.micro-os.prog.$name.pool$i" "$plist" \
+        || plutil -replace CFBundleIdentifier -string "jp.takpika.micro-os.prog.$name.pool$i" "$plist" || true
+    fi
+    codesign_path "$dst"
+  done
+  echo "pool -> $name x$POOL_SIZE signed copies for per-instance isolation on device"
+done

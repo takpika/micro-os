@@ -305,6 +305,10 @@ final class HostABI {
         lock.lock()
         exitedProcesses[pid] = code
         lock.unlock()
+        // Return any device framework-pool slot this process held. Done here (not
+        // in the loader) because programs exit via pthread_exit, which skips the
+        // loader's cleanup; inert for pids that never acquired one.
+        FrameworkPool.shared.release(pid: pid)
         processExitCondition.lock()
         processExitCondition.broadcast()
         processExitCondition.unlock()

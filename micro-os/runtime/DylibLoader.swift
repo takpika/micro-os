@@ -1,6 +1,72 @@
 import Foundation
 import Darwin
 
+// Implemented in micro_os_image_refresh.c (same target): resets a reused pool
+// image's writable data segments to their pristine post-load state, so each
+// process on a recycled device slot starts with fresh globals.
+@_silgen_name("micro_os_image_refresh")
+func micro_os_image_refresh(_ header: UnsafeRawPointer?)
+
+/// On a real device, per-process dylib copies are impossible (code signing only
+/// trusts images signed inside the app bundle), so a multicall program that
+/// spawns instances of itself — the toybox shell forks children that are also
+/// toybox — would load ONE shared image and let those instances clobber each
+/// other's globals (toys/this/toybuf). copy-payload.sh ships extra signed copies
+/// of such frameworks as `<stem>-pool-<i>.framework`; this hands out a distinct
+/// copy per live instance so each gets independent __DATA, keyed by pid so the
+/// slot can be returned when the process exits.
+///
+/// The slot is released from the process-exit path (HostABI.exit), NOT the
+/// loader's normal return: programs almost always terminate via exit() ->
+/// micro_os_process_exit -> pthread_exit, which unwinds past the loader without
+/// running its cleanup, so a `defer` there would leak every slot.
+///
+/// A reused slot must come back with FRESH globals: programs keep mutable state in
+/// __DATA (toybox's toys/this/toybuf, the CRT/libc shim's per-image state), and a
+/// stale value from the previous tenant corrupts the next one. We can't reload the
+/// image for that — iOS dyld keeps it mapped across dlclose — so the loader instead
+/// restores the image's pristine post-load __DATA on each reuse (see
+/// micro_os_image_refresh). Always compiled — on the simulator the loader uses
+/// private temp-dir copies instead and never acquires here, so this stays inert.
+final class FrameworkPool {
+    static let shared = FrameworkPool()
+    private let lock = NSLock()
+    private var free: [String: [String]] = [:]              // stem -> free copy binary paths
+    private var probed: Set<String> = []
+    private var assigned: [Int32: (stem: String, path: String)] = [:]  // pid -> checked-out slot
+
+    /// A free pool-copy binary path for `stem` (checked out to `pid`), or nil when
+    /// the program has no pool (single-instance) or every copy is currently in use.
+    func acquire(stem: String, frameworksPath: String, pid: Int32) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        if !probed.contains(stem) {
+            probed.insert(stem)
+            var paths: [String] = []
+            var i = 1
+            while true {
+                let p = "\(frameworksPath)/\(stem)-pool-\(i).framework/\(stem)"
+                guard FileManager.default.fileExists(atPath: p) else { break }
+                paths.append(p)
+                i += 1
+            }
+            free[stem] = paths
+        }
+        guard var list = free[stem], !list.isEmpty else { return nil }
+        let path = list.removeLast()
+        free[stem] = list
+        assigned[pid] = (stem, path)
+        return path
+    }
+
+    /// Return the slot held by `pid` (if any) to its free list. Idempotent and
+    /// safe for pids that never acquired (single-instance programs, simulator).
+    func release(pid: Int32) {
+        lock.lock(); defer { lock.unlock() }
+        guard let slot = assigned.removeValue(forKey: pid) else { return }
+        free[slot.stem, default: []].append(slot.path)
+    }
+}
+
 let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? = { raw in
     let boot = Unmanaged<ProcessBootInfo>.fromOpaque(raw).takeRetainedValue()
     let pcb = boot.pcb
@@ -23,48 +89,83 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     }
 
     // Resolve through any symlink (e.g. a $BIN command link -> toybox.dylib) to
-    // the real file, so the per-process copy below is a genuinely independent
-    // image rather than a symlink aliasing one shared copy.
+    // the real file: on the simulator the per-process copy below must copy a real
+    // image, not a symlink aliasing one; on device this gives the canonical
+    // realpath that dyld caches the loaded image under.
     let dylibPath = (resolveDylibPath(pcb.dylib) as NSString).resolvingSymlinksInPath
 
+    let handle: UnsafeMutableRawPointer?
+#if targetEnvironment(simulator)
     // Per-process isolation: dlopen a PRIVATE COPY of the dylib so each process
     // gets its own copy of the image's globals. Real programs keep mutable state
     // in globals (toybox: toys/this/toybuf); since every process here shares one
     // address space (pthreads), loading the same file would alias that state and
     // let concurrent/sequential processes corrupt each other. A distinct on-disk
-    // path defeats dyld's by-realpath image caching, giving fresh __DATA.
+    // path defeats dyld's by-realpath image caching, giving fresh __DATA. The
+    // simulator does not enforce code signing, so a copy in a writable dir runs.
     let isolatedPath = (NSTemporaryDirectory() as NSString)
         .appendingPathComponent("micro-os-pid\(pcb.pid)-\((dylibPath as NSString).lastPathComponent)")
     try? FileManager.default.removeItem(atPath: isolatedPath)
-    var isolated = (try? FileManager.default.copyItem(atPath: dylibPath, toPath: isolatedPath)) != nil
+    let isolated = (try? FileManager.default.copyItem(atPath: dylibPath, toPath: isolatedPath)) != nil
     defer {
         if isolated { try? FileManager.default.removeItem(atPath: isolatedPath) }
     }
-
-    var handle = dlopen(isolated ? isolatedPath : dylibPath, RTLD_NOW | RTLD_LOCAL)
-    if handle == nil && isolated {
-        // The private copy wouldn't load — most likely iOS device code signing,
-        // which only trusts dylibs shipped+signed inside the app bundle. Fall
-        // back to the bundle dylib: this loses per-process isolation (globals are
-        // then shared) but lets the program run instead of failing outright.
-        try? FileManager.default.removeItem(atPath: isolatedPath)
-        isolated = false
-        handle = dlopen(dylibPath, RTLD_NOW | RTLD_LOCAL)
-    }
+    handle = dlopen(isolated ? isolatedPath : dylibPath, RTLD_NOW | RTLD_LOCAL)
+#else
+    // On a real device the per-process-copy trick is impossible: iOS code signing
+    // (AMFI) only lets a process execute code from images signed inside the app
+    // bundle. A copy in a writable dir (NSTemporaryDirectory) dlopen()s without
+    // error, but its code pages fail validation and the kernel SIGKILLs the
+    // process the moment it executes them (EXC_BAD_ACCESS, CODESIGNING "Invalid
+    // Page"). So load an in-bundle, build-time-signed image. For a program that
+    // can run concurrently with itself (the toybox shell), check out a distinct
+    // signed pool copy so it gets independent globals; otherwise (single-instance
+    // programs, or the pool exhausted) load the base framework directly. dyld
+    // returns one image per realpath, so without a pool copy multiple instances
+    // of the same program would share __DATA.
+    let frameworks = Bundle.main.privateFrameworksPath ?? ""
+    let stem = (((dylibPath as NSString).deletingLastPathComponent as NSString)
+        .lastPathComponent as NSString).deletingPathExtension
+    // The slot is returned in HostABI.exit (keyed by pid), not here: programs
+    // exit via pthread_exit and never unwind back to this loader.
+    let poolPath = FrameworkPool.shared.acquire(stem: stem, frameworksPath: frameworks, pid: pcb.pid)
+    handle = dlopen(poolPath ?? dylibPath, RTLD_NOW | RTLD_LOCAL)
+#endif
     guard let handle else {
         let error = String(cString: dlerror())
         HostABI.shared.write(stream: .stderr, text: "loader: dlopen failed: \(error)\n")
         HostABI.shared.exit(pid: pcb.pid, code: 127)
         return nil
     }
+
+    // A pool image is kept loaded for reuse (iOS dyld won't unload it anyway), so
+    // the loader must NOT dlclose it. Other images (tmp copy, or the shared base)
+    // are dlclose'd as usual.
+    let poolOwned: Bool
+#if targetEnvironment(simulator)
+    poolOwned = false
+#else
+    poolOwned = poolPath != nil
+#endif
+
     HostABI.shared.setCurrentDylibHandle(handle)
 
     guard let symbol = dlsym(handle, "entry") else {
         HostABI.shared.write(stream: .stderr, text: "loader: dlsym(\"entry\") failed\n")
         HostABI.shared.clearCurrentDylibHandle()
-        dlclose(handle)
+        if !poolOwned { dlclose(handle) }
         HostABI.shared.exit(pid: pcb.pid, code: 126)
         return nil
+    }
+
+    // A reused pool slot's image still holds the previous process's globals (it
+    // can't be unloaded on device). Restore its pristine post-load __DATA so this
+    // process starts clean, exactly as a freshly loaded image would.
+    if poolOwned {
+        var dlinfo = Dl_info()
+        if dladdr(symbol, &dlinfo) != 0 {
+            micro_os_image_refresh(dlinfo.dli_fbase)
+        }
     }
 
     typealias Entry = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
@@ -73,7 +174,7 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
         entry(argc, argv)
     }
     HostABI.shared.clearCurrentDylibHandle()
-    dlclose(handle)
+    if !poolOwned { dlclose(handle) }
     HostABI.shared.exit(pid: pcb.pid, code: code)
     return nil
 }

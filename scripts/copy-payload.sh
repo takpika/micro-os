@@ -1,18 +1,21 @@
 #!/bin/bash
-# Copy payload/ into the app bundle (Resources/BundledDylibs), preserving
-# structure. For each <name>.xcframework, extract ONLY the slice matching the
-# target platform ($PLATFORM_NAME) as a flat <name>.dylib — so the same payload
-# works for both device and simulator without re-building. Other files (config,
-# loose dylibs, subfolders) are mirrored as-is. Nothing is compiled here.
+# Copy payload/ into the app bundle. Program code ships as code-signed
+# .frameworks in the app's Frameworks/ — bare dylibs in the bundle are rejected
+# by App Store (ITMS-90171), so each <name>.xcframework's matching slice (a
+# <name>.framework) is embedded there. Everything else in payload/ (etc/, data,
+# subfolders) mirrors into Resources/BundledDylibs as non-code resources. For
+# each xcframework only the slice matching $PLATFORM_NAME is used, so the same
+# payload works for device and simulator. Nothing is compiled here.
 set -eu
 
 ROOT="${SRCROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 SOURCE_DIR="${PAYLOAD_DIR:-$ROOT/payload}"
-OUTPUT_DIR="${TARGET_BUILD_DIR:-$ROOT/.build}/${UNLOCALIZED_RESOURCES_FOLDER_PATH:-Resources}/BundledDylibs"
+BUILT="${TARGET_BUILD_DIR:-$ROOT/.build}"
+RES_DIR="$BUILT/${UNLOCALIZED_RESOURCES_FOLDER_PATH:-Resources}/BundledDylibs"
+FW_DIR="$BUILT/${FRAMEWORKS_FOLDER_PATH:-Frameworks}"
 PLATFORM="${PLATFORM_NAME:-iphonesimulator}"
 
-sign_dylib() {
-  dylib="$1"
+codesign_path() {  # path
   if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ]; then
     return
   fi
@@ -20,7 +23,7 @@ sign_dylib() {
   if [ -z "$identity" ]; then
     identity="-"
   fi
-  xcrun codesign --force --sign "$identity" --timestamp=none "$dylib"
+  xcrun codesign --force --sign "$identity" --timestamp=none "$1"
 }
 
 # Print the xcframework slice directory matching the target platform.
@@ -37,30 +40,34 @@ select_slice() {
   done
 }
 
-mkdir -p "$OUTPUT_DIR"
-find "$OUTPUT_DIR" -mindepth 1 -delete
+mkdir -p "$RES_DIR" "$FW_DIR"
+find "$RES_DIR" -mindepth 1 -delete   # our resources dir — safe to wipe
 
 if [ ! -d "$SOURCE_DIR" ]; then
   echo "note: no payload at $SOURCE_DIR — bundling nothing"
   exit 0
 fi
 
-# 1. Mirror everything except xcframeworks (handled below) and repo guards.
+# 1. Mirror non-code payload files (etc/, data, …) into BundledDylibs. xcframeworks
+# (handled below) and bare dylibs (not allowed in the bundle) are excluded.
 # --copy-unsafe-links: a payload entry that is a symlink pointing OUTSIDE the
-# payload tree (e.g. a local data/ symlinked to assets kept elsewhere) is copied
-# as the real files it refers to. The app bundle must be self-contained — code
-# signing and installd reject symlinks that escape it — so this materializes such
-# assets into the bundle exactly as they would ship on device. In-tree links are
-# left as links.
+# payload tree (e.g. a local data/ symlinked elsewhere) is copied as the real
+# files it refers to — the bundle must be self-contained (code signing/installd
+# reject escaping symlinks). In-tree links are left as links.
 rsync -a --copy-unsafe-links \
   --exclude='*.xcframework' \
+  --exclude='*.dylib' \
   --exclude='.gitignore' \
   --exclude='.gitkeep' \
   --exclude='.DS_Store' \
   --exclude='README.md' \
-  "$SOURCE_DIR"/ "$OUTPUT_DIR"/
+  "$SOURCE_DIR"/ "$RES_DIR"/
 
-# 2. Extract the matching slice from each xcframework as a flat dylib.
+# 2. Embed each xcframework's matching slice (a .framework) into Frameworks/, then
+# code-sign it. Only our program frameworks are touched (others Xcode may have put
+# in Frameworks/ are left alone). chmod +x the binary: dlopen doesn't care, but a
+# shell (toybox sh) only runs a PATH command after access(X_OK), and command links
+# point at these.
 slices=0
 shopt -s nullglob
 for xcf in "$SOURCE_DIR"/*.xcframework; do
@@ -70,23 +77,20 @@ for xcf in "$SOURCE_DIR"/*.xcframework; do
     echo "warning: $name.xcframework has no slice for $PLATFORM — skipping" >&2
     continue
   fi
-  dylib="$(ls "$slice"*.dylib 2>/dev/null | head -1)"
-  if [ -z "$dylib" ]; then
-    echo "warning: no dylib inside $slice — skipping $name" >&2
+  # The framework inside the slice is named after the xcframework. Check the
+  # exact path (a glob that matches nothing would expand to nothing and make
+  # `ls -d` list ".", which would then copy the whole repo into the bundle).
+  fw="$slice$name.framework"
+  if [ ! -d "$fw" ]; then
+    echo "note: $name.xcframework has no $name.framework slice (stale dylib xcframework?) — skipping" >&2
     continue
   fi
-  cp "$dylib" "$OUTPUT_DIR/$name.dylib"
+  rm -rf "$FW_DIR/$name.framework"
+  cp -R "$fw" "$FW_DIR/$name.framework"
+  bin="$FW_DIR/$name.framework/$name"
+  [ -f "$bin" ] && chmod +x "$bin"
+  codesign_path "$FW_DIR/$name.framework"
   slices=$((slices + 1))
 done
 
-# 3. Code-sign every dylib now in the bundle (extracted + any loose ones), and
-#    mark it executable: dlopen doesn't care, but a shell (toybox sh) only runs a
-#    PATH command after access(X_OK) succeeds, and command links point at these.
-signed=0
-while IFS= read -r -d '' dylib; do
-  chmod +x "$dylib"
-  sign_dylib "$dylib"
-  signed=$((signed + 1))
-done < <(find "$OUTPUT_DIR" -type f -name '*.dylib' -print0)
-
-echo "payload -> BundledDylibs: $slices xcframework slice(s) for $PLATFORM, $signed dylib(s) signed"
+echo "payload -> $slices framework(s) embedded in Frameworks/ for $PLATFORM"

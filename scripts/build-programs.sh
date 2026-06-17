@@ -66,7 +66,7 @@ build_c_crt() {  # out source...
 # it per platform with xcodebuild, then pack the slices into an xcframework.
 # This is independent of the app target, so the app stays a pure kernel.
 build_wm_xcframework() {
-  libs=()
+  fws=()
   for plat in $PLATFORMS; do
     dir="$BUILD/wm-$plat"
     rm -rf "$dir"; mkdir -p "$dir"
@@ -75,11 +75,13 @@ build_wm_xcframework() {
       CODE_SIGNING_ALLOWED=NO \
       CONFIGURATION_BUILD_DIR="$dir" \
       build >/dev/null
-    libs+=(-library "$dir/wm.dylib")
+    fw="$dir/wm.framework"
+    make_framework "$dir/wm.dylib" "$fw" "wm" "$plat"
+    fws+=(-framework "$fw")
   done
   rm -rf "$OUT/wm.xcframework"
-  xcrun xcodebuild -create-xcframework "${libs[@]}" -output "$OUT/wm.xcframework" >/dev/null
-  echo "built wm -> payload/wm.xcframework ($PLATFORMS) [xcodebuild target]"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/wm.xcframework" >/dev/null
+  echo "built wm -> payload/wm.xcframework ($PLATFORMS) [xcodebuild target, framework]"
 }
 
 # ---- toybox: vanilla source, never patched (busybox-like shell environment) ----
@@ -214,17 +216,17 @@ write_setup_path() {  # slice
     echo '# Provisions userspace entirely from within micro-os (works on device,'
     echo '# no host-side commands): toybox applet links, standalone program'
     echo '# command links, and the bundled app data dir.'
-    echo 'T="$BUNDLE/toybox.dylib"'
+    echo 'T="$FW/toybox.framework/toybox"'
     echo '"$T" mkdir -p "$BIN"'
     echo "for c in $applets"
     echo 'do "$T" ln -sf "$T" "$BIN/$c"'
     echo 'done'
-    echo '# Standalone program dylibs (wm, samples, …) -> $BIN/<name>, so the'
+    echo '# Standalone program frameworks (wm, samples, …) -> $BIN/<name>, so the'
     echo '# shell can launch them by name. toybox is the multicall above and'
     echo '# init is PID 1, not a command.'
-    echo 'for f in "$BUNDLE"/*.dylib'
-    echo 'do n="${f##*/}"; n="${n%.dylib}"'
-    echo '   case "$n" in toybox|init) ;; *) "$T" ln -sf "$f" "$BIN/$n";; esac'
+    echo 'for d in "$FW"/*.framework'
+    echo 'do n="${d##*/}"; n="${n%.framework}"'
+    echo '   case "$n" in toybox|init) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
     echo 'done'
     echo '# Bundled app data -> the working-dir-relative ./data an app expects'
     echo '# (an app that reads ./data from its CWD finds it at $HOME/data).'
@@ -235,17 +237,19 @@ write_setup_path() {  # slice
 
 build_toybox_xcframework() {
   fetch_toybox || return 1
-  libs=()
+  fws=()
   for plat in $PLATFORMS; do
     mkdir -p "$BUILD/$plat"
     slice="$BUILD/$plat/toybox.dylib"
     echo "  building toybox slice: $plat"
     build_toybox_slice "$slice" "$plat" || return 1
-    libs+=(-library "$slice")
+    fw="$BUILD/$plat/toybox.framework"
+    make_framework "$slice" "$fw" "toybox" "$plat"
+    fws+=(-framework "$fw")
   done
   rm -rf "$OUT/toybox.xcframework"
-  xcrun xcodebuild -create-xcframework "${libs[@]}" -output "$OUT/toybox.xcframework" >/dev/null
-  echo "built toybox -> payload/toybox.xcframework ($PLATFORMS) [vanilla $TOYBOX_VERSION, auto-pruned]"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/toybox.xcframework" >/dev/null
+  echo "built toybox -> payload/toybox.xcframework ($PLATFORMS) [vanilla $TOYBOX_VERSION, auto-pruned, framework]"
 
   write_setup_path "$BUILD/${PLATFORMS%% *}/toybox.dylib"
 }
@@ -317,20 +321,57 @@ EOF
   echo "seeded default toybox config -> payload/etc/init.conf"
 }
 
-# ---- build every platform slice and pack into an .xcframework ----
+# Wrap a built dylib slice into a minimal .framework bundle. App Store rejects
+# bare dylibs in the app (ITMS-90171); loadable code must be a proper bundle, so
+# every program ships as Frameworks/<name>.framework/<name>. Sets the framework
+# binary's id to @rpath/<name>.framework/<name> and writes a FMWK Info.plist with
+# the right platform so `xcodebuild -create-xcframework -framework` accepts it.
+make_framework() {  # dylib fwdir name plat
+  _dy="$1"; _fw="$2"; _fn="$3"; _plat="$4"
+  case "$_plat" in
+    iphoneos)        _splat="iPhoneOS" ;;
+    iphonesimulator) _splat="iPhoneSimulator" ;;
+    *)               _splat="iPhoneOS" ;;
+  esac
+  rm -rf "$_fw"; mkdir -p "$_fw"
+  cp "$_dy" "$_fw/$_fn"
+  xcrun install_name_tool -id "@rpath/$_fn.framework/$_fn" "$_fw/$_fn" 2>/dev/null
+  cat > "$_fw/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key><string>en</string>
+	<key>CFBundleExecutable</key><string>$_fn</string>
+	<key>CFBundleIdentifier</key><string>jp.takpika.micro-os.prog.$_fn</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleName</key><string>$_fn</string>
+	<key>CFBundlePackageType</key><string>FMWK</string>
+	<key>CFBundleShortVersionString</key><string>1.0</string>
+	<key>CFBundleVersion</key><string>1</string>
+	<key>MinimumOSVersion</key><string>15.0</string>
+	<key>CFBundleSupportedPlatforms</key><array><string>$_splat</string></array>
+</dict>
+</plist>
+EOF
+}
+
+# ---- build every platform slice, wrap as a .framework, pack into an .xcframework ----
 build_xcf() {  # name buildfn args...
   name="$1"; buildfn="$2"; shift 2
-  libs=()
+  fws=()
   for plat in $PLATFORMS; do
     set_platform "$plat"
     mkdir -p "$BUILD/$plat"
     slice="$BUILD/$plat/$name.dylib"
     "$buildfn" "$slice" "$@"
-    libs+=(-library "$slice")
+    fw="$BUILD/$plat/$name.framework"
+    make_framework "$slice" "$fw" "$name" "$plat"
+    fws+=(-framework "$fw")
   done
   rm -rf "$OUT/$name.xcframework"
-  xcrun xcodebuild -create-xcframework "${libs[@]}" -output "$OUT/$name.xcframework" >/dev/null
-  echo "built $name -> payload/$name.xcframework ($PLATFORMS)"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/$name.xcframework" >/dev/null
+  echo "built $name -> payload/$name.xcframework ($PLATFORMS) [framework]"
 }
 
 build_one() {

@@ -263,7 +263,14 @@ public func micro_os_access(_ pathC: UnsafePointer<CChar>?, _ mode: Int32) -> In
     let xOK: Int32 = 1  // X_OK
     if (mode & xOK) != 0 {
         let resolved = (path as NSString).resolvingSymlinksInPath
-        if resolved.hasSuffix(".dylib") && FileManager.default.fileExists(atPath: resolved) {
+        // A program ships either as a bare .dylib (legacy) or, in the app bundle,
+        // as the binary inside a framework: Frameworks/<name>.framework/<name>.
+        // Either way the read-only bundle leaves it without +x, so treat both as
+        // runnable (dlopen doesn't need +x; this just gets past a shell's X_OK).
+        let parent = ((resolved as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        let base = (resolved as NSString).lastPathComponent
+        let isFrameworkBinary = parent == "\(base).framework"
+        if (resolved.hasSuffix(".dylib") || isFrameworkBinary) && FileManager.default.fileExists(atPath: resolved) {
             try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o755)], ofItemAtPath: resolved)
             return 0
         }

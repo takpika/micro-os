@@ -11,6 +11,12 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     if let resources = Bundle.main.resourceURL {
         setenv("BUNDLE", resources.appendingPathComponent("BundledDylibs", isDirectory: true).path, 1)
     }
+    // Program code ships as .frameworks in the app's Frameworks/ (bare dylibs are
+    // rejected by App Store). $FW points there so setup-path can link the per-
+    // program command names to Frameworks/<name>.framework/<name>.
+    if let frameworks = Bundle.main.privateFrameworksPath {
+        setenv("FW", frameworks, 1)
+    }
     setenv("BIN", "\(pcb.home)/.local/bin", 1)
     if chdir(pcb.home) != 0 {
         HostABI.shared.write(stream: .stderr, text: "loader: chdir(\(pcb.home)) failed errno=\(errno)\n")
@@ -82,27 +88,31 @@ func resolveDylibPath(_ name: String) -> String {
         return cwdPath
     }
 
-    if let resource = Bundle.main.path(forResource: (name as NSString).deletingPathExtension, ofType: (name as NSString).pathExtension) {
-        return resource
+    // A program ships as Frameworks/<name>.framework/<name> (a real bundle —
+    // App Store rejects bare dylibs). Strip any directory and legacy .dylib
+    // suffix to get the framework name.
+    let stem = ((name as NSString).lastPathComponent as NSString).deletingPathExtension
+    if let binary = frameworkBinaryPath(stem) {
+        return binary
     }
 
-    if let resource = Bundle.main.path(
-        forResource: (name as NSString).deletingPathExtension,
-        ofType: (name as NSString).pathExtension,
-        inDirectory: "BundledDylibs"
-    ) {
-        return resource
-    }
-
-    // Unknown command -> fall back to the bundled toybox multicall dylib, if
-    // present. A bare name like "ls" has no ls.dylib; toybox dispatches on
-    // argv[0] (kept as "ls" by the kernel), so this runs the matching applet.
-    // This is how the shell's exec("ls") resolves without per-applet symlinks.
-    if let toybox = Bundle.main.path(forResource: "toybox", ofType: "dylib", inDirectory: "BundledDylibs") {
+    // Unknown command -> fall back to the bundled toybox multicall, if present.
+    // A bare name like "ls" has no ls.framework; toybox dispatches on argv[0]
+    // (kept as "ls" by the kernel), so this runs the matching applet. This is how
+    // the shell's exec("ls") resolves without per-applet frameworks.
+    if let toybox = frameworkBinaryPath("toybox") {
         return toybox
     }
 
     return name
+}
+
+// The executable inside an embedded program framework
+// (Frameworks/<name>.framework/<name>), or nil if there is no such framework.
+func frameworkBinaryPath(_ name: String) -> String? {
+    guard !name.isEmpty, let frameworks = Bundle.main.privateFrameworksPath else { return nil }
+    let binary = "\(frameworks)/\(name).framework/\(name)"
+    return FileManager.default.fileExists(atPath: binary) ? binary : nil
 }
 
 func withCArgv<R>(_ args: [String], body: (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> R) -> R {

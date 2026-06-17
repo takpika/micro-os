@@ -35,8 +35,23 @@ struct MicroOSApp: App {
                     didBoot = true
                     HostABI.shared.attach(kernel: kernel)
                     kernel.boot()
+                    loadHostABIFramework()
                     launchInit()
                 }
+        }
+    }
+
+    /// Load the host-ABI framework globally before any program runs. Programs
+    /// resolve the micro_os_* host ABI by flat-namespace lookup; on a real device
+    /// dyld searches only loaded dylibs for those (never the main executable), so
+    /// the ABI ships as MicroOSABI.framework and must be in the global namespace
+    /// before any program dlopen()s. Its thin forwarders then call the real
+    /// implementations in this executable.
+    private func loadHostABIFramework() {
+        guard let frameworks = Bundle.main.privateFrameworksPath else { return }
+        let path = "\(frameworks)/MicroOSABI.framework/MicroOSABI"
+        if dlopen(path, RTLD_NOW | RTLD_GLOBAL) == nil, let err = dlerror() {
+            NSLog("micro-os: MicroOSABI load failed: %s", err)
         }
     }
 

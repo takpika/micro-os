@@ -226,7 +226,7 @@ write_setup_path() {  # slice
     echo '# init is PID 1, not a command.'
     echo 'for d in "$FW"/*.framework'
     echo 'do n="${d##*/}"; n="${n%.framework}"'
-    echo '   case "$n" in toybox|init) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
+    echo '   case "$n" in toybox|init|MicroOSABI) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
     echo 'done'
     echo '# Bundled app data -> the working-dir-relative ./data an app expects'
     echo '# (an app that reads ./data from its CWD finds it at $HOME/data).'
@@ -377,6 +377,11 @@ build_xcf() {  # name buildfn args...
 build_one() {
   case "$1" in
     init)                  build_xcf init build_c "$ROOT/apps/init/init.c"; seed_default_init_conf ;;
+    # The host ABI as a dylib (not a program/command). Programs resolve micro_os_*
+    # against this framework, which the app loads globally at boot. On device dyld
+    # won't resolve those flat-namespace symbols against the main executable, only
+    # against loaded dylibs — so the ABI must live in one.
+    MicroOSABI)            build_xcf MicroOSABI build_c "$CRT/micro_os_abi.c" ;;
     wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
     demo-program)          build_xcf demo-program build_c_crt "$ROOT/samples/demo-program.c" ;;
@@ -410,7 +415,7 @@ done
 
 # Program groups. The build-system.sh / build-samples.sh entry points just set
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
-SYSTEM_PROGRAMS="init wm toybox"
+SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;

@@ -27,6 +27,7 @@ over a shared engine (`scripts/build-programs.sh`):
 ```sh
 scripts/build-system.sh             # system apps (init, wm)
 scripts/build-samples.sh            # sample programs
+GROUP=optional scripts/build-programs.sh curl  # optional programs
 scripts/build-system.sh init        # a subset
 scripts/build-system.sh --list      # list that group
 ```

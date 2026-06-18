@@ -254,6 +254,174 @@ build_toybox_xcframework() {
   write_setup_path "$BUILD/${PLATFORMS%% *}/toybox.dylib"
 }
 
+# ---- curl: official source + official OpenSSL, built without patching either ----
+# curl no longer ships an Apple-native TLS backend by itself; HTTPS needs a TLS
+# backend. Build upstream OpenSSL statically, then build upstream curl against it
+# with Apple SecTrust enabled so certificate verification uses the platform trust
+# store. The upstream source trees are never patched: microOS integration is only
+# via compiler/linker flags and the CRT/libc shim objects linked into the final
+# dylib.
+CURL_VERSION="${CURL_VERSION:-8.20.0}"
+CURL_SHA256="${CURL_SHA256:-63fe2dc148ba0ceae89922ef838f7e5c946272c2e78b7c59fab4b79d3ce2b896}"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.0.21}"
+OPENSSL_SHA256="${OPENSSL_SHA256:-617e29af8e421f46649484a4937e48c685e47f46488167c982f88bc4ec1d522f}"
+
+fetch_verified_tarball() {  # name version url sha out
+  local name="$1"; local version="$2"; local url="$3"; local want="$4"; local out="$5"
+  mkdir -p "$(dirname "$out")"
+  if [ ! -f "$out" ]; then
+    echo "  fetching $url"
+    curl -fsSL -o "$out" "$url"
+  fi
+  local got
+  got="$(shasum -a 256 "$out" | awk '{print $1}')"
+  if [ "$got" != "$want" ]; then
+    echo "$name: sha256 mismatch for $version (got $got, want $want)" >&2
+    rm -f "$out"; return 1
+  fi
+}
+
+fetch_curl_sources() {
+  CURL_TARBALL="$BUILD/curl/curl-$CURL_VERSION.tar.xz"
+  OPENSSL_TARBALL="$BUILD/curl/openssl-$OPENSSL_VERSION.tar.gz"
+  fetch_verified_tarball curl "$CURL_VERSION" \
+    "https://curl.se/download/curl-$CURL_VERSION.tar.xz" \
+    "$CURL_SHA256" "$CURL_TARBALL"
+  fetch_verified_tarball openssl "$OPENSSL_VERSION" \
+    "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" \
+    "$OPENSSL_SHA256" "$OPENSSL_TARBALL"
+}
+
+curl_platform_vars() {  # plat -> sets sdk arch minv host openssl_target target_flags
+  case "$1" in
+    iphoneos)
+      sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+      arch=arm64
+      minv="-miphoneos-version-min=15.0"
+      host="aarch64-apple-darwin"
+      openssl_target="ios64-xcrun"
+      openssl_flags="$minv"
+      ;;
+    iphonesimulator)
+      sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+      arch="$(uname -m)"
+      minv="-mios-simulator-version-min=15.0"
+      case "$arch" in
+        arm64)  host="aarch64-apple-darwin"; openssl_target="iossimulator-xcrun" ;;
+        x86_64) host="x86_64-apple-darwin"; openssl_target="iossimulator-xcrun" ;;
+        *) echo "curl: unsupported simulator arch: $arch" >&2; return 1 ;;
+      esac
+      openssl_flags="$minv"
+      ;;
+    *) echo "unknown platform: $1 (use iphoneos | iphonesimulator)" >&2; return 1 ;;
+  esac
+  target_flags="-isysroot $sdk -arch $arch $minv"
+}
+
+build_openssl_for_curl() {  # plat prefix
+  local plat="$1"; local prefix="$2"
+  curl_platform_vars "$plat"
+  if [ -f "$prefix/lib/libssl.a" ] && [ -f "$prefix/lib/libcrypto.a" ]; then
+    return 0
+  fi
+
+  local ossl_src="$BUILD/curl/openssl-$plat-src"
+  rm -rf "$ossl_src" "$prefix"
+  mkdir -p "$ossl_src" "$prefix"
+  tar -xf "$OPENSSL_TARBALL" -C "$ossl_src" --strip-components 1
+  (
+    cd "$ossl_src"
+    ./Configure "$openssl_target" no-shared no-tests no-ui-console no-asm no-module \
+      --prefix="$prefix" --openssldir="$prefix/ssl" $openssl_flags
+    make -j"${MAKE_JOBS:-2}" build_libs
+    mkdir -p "$prefix/include" "$prefix/lib"
+    cp -R include/openssl "$prefix/include/"
+    cp -f libssl.a libcrypto.a "$prefix/lib/"
+  ) || return 1
+}
+
+build_curl_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_curl_sources
+  curl_platform_vars "$plat"
+
+  local cc="$(xcrun -f clang)"
+  local ar="$(xcrun -f ar)"
+  local ranlib="$(xcrun -f ranlib)"
+  local d="$(dirname "$out")"
+  local curl_src="$BUILD/curl/curl-$plat-src"
+  local ossl="$BUILD/curl/openssl-$plat"
+
+  build_openssl_for_curl "$plat" "$ossl"
+
+  rm -rf "$curl_src"; mkdir -p "$curl_src"
+  tar -xf "$CURL_TARBALL" -C "$curl_src" --strip-components 1
+
+  "$cc" $target_flags -c -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/curl-crt.o"
+  "$cc" $target_flags -c -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/curl-libc.o"
+
+  (
+    cd "$curl_src"
+    env \
+      CC="$cc" CPP="$cc $target_flags -E" AR="$ar" RANLIB="$ranlib" PKG_CONFIG=/usr/bin/false \
+      CPPFLAGS="-I$INCLUDE -I$ossl/include -include micro_os_crt.h" \
+      CFLAGS="$target_flags -fPIC" \
+      LDFLAGS="$target_flags -L$ossl/lib -framework Security -framework CoreFoundation" \
+      ./configure \
+        --host="$host" \
+        --disable-shared \
+        --enable-static \
+        --disable-docs \
+        --disable-manual \
+        --disable-ldap \
+        --disable-ldaps \
+        --disable-rtsp \
+        --disable-dict \
+        --disable-telnet \
+        --disable-tftp \
+        --disable-pop3 \
+        --disable-imap \
+        --disable-smb \
+        --disable-smtp \
+        --disable-gopher \
+        --disable-mqtt \
+        --disable-ipfs \
+        --disable-websockets \
+        --disable-doh \
+        --without-zlib \
+        --without-brotli \
+        --without-zstd \
+        --without-libpsl \
+        --without-nghttp2 \
+        --without-nghttp3 \
+        --with-openssl="$ossl" \
+        --with-apple-sectrust \
+        --enable-ca-native
+    make -j"${MAKE_JOBS:-2}" -C lib libcurl.la
+    make -j"${MAKE_JOBS:-2}" -C src curl \
+      LDFLAGS="$target_flags -dynamiclib -undefined dynamic_lookup -Wl,-alias,_main,_entry $d/curl-crt.o $d/curl-libc.o -L$ossl/lib" \
+      LIBS="-framework Security -framework CoreFoundation"
+    cp -f src/curl "$out"
+  ) || return 1
+}
+
+build_curl_xcframework() {
+  fetch_curl_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/curl.dylib"
+    echo "  building curl slice: $plat"
+    build_curl_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/curl.framework"
+    make_framework "$slice" "$fw" "curl" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/curl.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/curl.xcframework" >/dev/null
+  echo "built curl -> payload/curl.xcframework ($PLATFORMS) [official curl $CURL_VERSION + OpenSSL $OPENSSL_VERSION, framework]"
+}
+
 build_vcocoa() {  # out appsrc
   out="$1"; appsrc="$2"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vcocoa"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
@@ -384,6 +552,7 @@ build_one() {
     MicroOSABI)            build_xcf MicroOSABI build_c "$CRT/micro_os_abi.c" ;;
     wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
+    curl)                  build_curl_xcframework ;;
     demo-program)          build_xcf demo-program build_c_crt "$ROOT/samples/demo-program.c" ;;
     file-fallback-program) build_xcf file-fallback-program build_c_crt "$ROOT/samples/file-fallback-program.c" ;;
     stdin-program)         build_xcf stdin-program build_c_crt "$ROOT/samples/stdin-program.c" ;;
@@ -417,12 +586,14 @@ done
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
 SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
+OPTIONAL_PROGRAMS="curl"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
   samples) GROUP_PROGRAMS="$SAMPLE_PROGRAMS" ;;
+  optional) GROUP_PROGRAMS="$OPTIONAL_PROGRAMS" ;;
   local)   GROUP_PROGRAMS="$LOCAL_PROGRAMS" ;;
   all)     GROUP_PROGRAMS="$SYSTEM_PROGRAMS $SAMPLE_PROGRAMS $LOCAL_PROGRAMS" ;;
-  *) echo "unknown GROUP: $GROUP (use system | samples | local | all)" >&2; exit 1 ;;
+  *) echo "unknown GROUP: $GROUP (use system | samples | optional | local | all)" >&2; exit 1 ;;
 esac
 
 if [ "${1:-}" = "--list" ]; then printf '%s\n' $GROUP_PROGRAMS; exit 0; fi

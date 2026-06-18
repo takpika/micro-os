@@ -46,6 +46,7 @@ single shared address space, each running on its own pthread.
    ```sh
    scripts/build-system.sh      # system apps (init, wm)
    scripts/build-samples.sh     # sample programs
+   GROUP=optional scripts/build-programs.sh curl  # optional programs (curl)
    # faster sim-only: PLATFORMS=iphonesimulator scripts/build-system.sh
    ```
 

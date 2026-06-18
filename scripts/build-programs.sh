@@ -138,6 +138,13 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
     # A forked child must exec() a fresh process, never run an applet in-process
     # (one address space -> shared globals). Pairs with the CRT fork()-via-spawn.
     sed -i '' 's/^# CONFIG_TOYBOX_NORECURSE is not set$/CONFIG_TOYBOX_NORECURSE=y/' .config
+    # Network diagnostics we want available in the default userspace. These are
+    # upstream toybox applets; /proc, /dev, and Linux-netlink based tools are
+    # deliberately left out instead of faking platform data in the shim.
+    en(){ sed -i '' "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config; }
+    for applet in HOST PING TELNET; do en "$applet"; done
+    sed -i '' 's/^CONFIG_IFCONFIG=y$/# CONFIG_IFCONFIG is not set/' .config
+    sed -i '' 's/^CONFIG_IP=y$/# CONFIG_IP is not set/' .config
     # linux32 needs personality() — a Linux syscall absent on Apple platforms
     # (macOS too). The auto-prune can't catch it: -undefined dynamic_lookup lets
     # it link, and the iOS SDK .tbd declares it, so it only fails at runtime
@@ -226,7 +233,7 @@ write_setup_path() {  # slice
     echo '# init is PID 1, not a command.'
     echo 'for d in "$FW"/*.framework'
     echo 'do n="${d##*/}"; n="${n%.framework}"'
-    echo '   case "$n" in toybox|init|MicroOSABI) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
+    echo '   case "$n" in toybox|init|MicroOSABI|libcrypto|libssl|libuv|libisc|libdns|libisccfg|libirs) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
     echo 'done'
     echo '# Bundled app data -> the working-dir-relative ./data an app expects'
     echo '# (an app that reads ./data from its CWD finds it at $HOME/data).'
@@ -265,13 +272,28 @@ CURL_VERSION="${CURL_VERSION:-8.20.0}"
 CURL_SHA256="${CURL_SHA256:-63fe2dc148ba0ceae89922ef838f7e5c946272c2e78b7c59fab4b79d3ce2b896}"
 OPENSSL_VERSION="${OPENSSL_VERSION:-3.0.21}"
 OPENSSL_SHA256="${OPENSSL_SHA256:-617e29af8e421f46649484a4937e48c685e47f46488167c982f88bc4ec1d522f}"
+BIND_OPENSSL_VERSION="${BIND_OPENSSL_VERSION:-1.1.1w}"
+BIND_OPENSSL_SHA256="${BIND_OPENSSL_SHA256:-cf3098950cb4d853ad95c0841f1f9c6d3dc102dccfcacd521d93925208b76ac8}"
+BIND_OPENSSL_RELEASE_TAG="${BIND_OPENSSL_RELEASE_TAG:-OpenSSL_1_1_1w}"
+BIND_OPENSSL_DYLIB_SUFFIX="${BIND_OPENSSL_DYLIB_SUFFIX:-1.1}"
+LIBUV_VERSION="${LIBUV_VERSION:-1.52.1}"
+LIBUV_SHA256="${LIBUV_SHA256:-478baf2599bfbc882c355288c9cb6f92e0e7dda435fa04031fa5b607cf3f414c}"
+BIND_VERSION="${BIND_VERSION:-9.18.50}"
+BIND_SHA256="${BIND_SHA256:-a24f93be94712a8c11752294410f2f8a2510ec7fdc931d207fc61cdf30e54f4d}"
+BIND_LIBCRYPTO_INSTALL_NAME="@loader_path/../libcrypto.framework/libcrypto"
+BIND_LIBSSL_INSTALL_NAME="@loader_path/../libssl.framework/libssl"
+BIND_LIBUV_INSTALL_NAME="@loader_path/../libuv.framework/libuv"
+BIND_LIBISC_INSTALL_NAME="@loader_path/../libisc.framework/libisc"
+BIND_LIBDNS_INSTALL_NAME="@loader_path/../libdns.framework/libdns"
+BIND_LIBISCCFG_INSTALL_NAME="@loader_path/../libisccfg.framework/libisccfg"
+BIND_LIBIRS_INSTALL_NAME="@loader_path/../libirs.framework/libirs"
 
 fetch_verified_tarball() {  # name version url sha out
   local name="$1"; local version="$2"; local url="$3"; local want="$4"; local out="$5"
   mkdir -p "$(dirname "$out")"
   if [ ! -f "$out" ]; then
     echo "  fetching $url"
-    curl -fsSL -o "$out" "$url"
+    curl -fsSL -o "$out" "$url" || return 1
   fi
   local got
   got="$(shasum -a 256 "$out" | awk '{print $1}')"
@@ -290,6 +312,27 @@ fetch_curl_sources() {
   fetch_verified_tarball openssl "$OPENSSL_VERSION" \
     "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" \
     "$OPENSSL_SHA256" "$OPENSSL_TARBALL"
+}
+
+fetch_libuv_sources() {
+  LIBUV_TARBALL="$BUILD/libuv/libuv-v$LIBUV_VERSION.tar.gz"
+  fetch_verified_tarball libuv "$LIBUV_VERSION" \
+    "https://github.com/libuv/libuv/archive/refs/tags/v$LIBUV_VERSION.tar.gz" \
+    "$LIBUV_SHA256" "$LIBUV_TARBALL"
+}
+
+fetch_bind_openssl_sources() {
+  BIND_OPENSSL_TARBALL="$BUILD/bind/openssl-$BIND_OPENSSL_VERSION.tar.gz"
+  fetch_verified_tarball openssl "$BIND_OPENSSL_VERSION" \
+    "https://github.com/openssl/openssl/releases/download/$BIND_OPENSSL_RELEASE_TAG/openssl-$BIND_OPENSSL_VERSION.tar.gz" \
+    "$BIND_OPENSSL_SHA256" "$BIND_OPENSSL_TARBALL"
+}
+
+fetch_bind_sources() {
+  BIND_TARBALL="$BUILD/bind/bind-$BIND_VERSION.tar.xz"
+  fetch_verified_tarball bind "$BIND_VERSION" \
+    "https://downloads.isc.org/isc/bind9/$BIND_VERSION/bind-$BIND_VERSION.tar.xz" \
+    "$BIND_SHA256" "$BIND_TARBALL"
 }
 
 curl_platform_vars() {  # plat -> sets sdk arch minv host openssl_target target_flags
@@ -338,6 +381,82 @@ build_openssl_for_curl() {  # plat prefix
     cp -R include/openssl "$prefix/include/"
     cp -f libssl.a libcrypto.a "$prefix/lib/"
   ) || return 1
+}
+
+build_openssl_dynamic() {  # plat prefix
+  local plat="$1"; local prefix="$2"
+  curl_platform_vars "$plat"
+  local ssl_dylib="$prefix/lib/libssl.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
+  local crypto_dylib="$prefix/lib/libcrypto.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
+  if [ -f "$ssl_dylib" ] && [ -f "$crypto_dylib" ]; then
+    xcrun install_name_tool -id "$BIND_LIBCRYPTO_INSTALL_NAME" "$crypto_dylib" 2>/dev/null || true
+    xcrun install_name_tool -id "$BIND_LIBSSL_INSTALL_NAME" "$ssl_dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$crypto_dylib" \
+      "$BIND_LIBCRYPTO_INSTALL_NAME" "$ssl_dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "@rpath/libcrypto.framework/libcrypto" \
+      "$BIND_LIBCRYPTO_INSTALL_NAME" "$ssl_dylib" 2>/dev/null || true
+    return 0
+  fi
+
+  local ossl_src="$BUILD/openssl-dynamic/openssl-$plat-src"
+  rm -rf "$ossl_src" "$prefix"
+  mkdir -p "$ossl_src" "$prefix"
+  tar -xf "$BIND_OPENSSL_TARBALL" -C "$ossl_src" --strip-components 1
+  (
+    cd "$ossl_src"
+    ./Configure "$openssl_target" shared no-tests no-ui-console no-asm \
+      --prefix="$prefix" --openssldir="$prefix/ssl" $openssl_flags || exit 1
+    make -j"${MAKE_JOBS:-2}" build_libs || exit 1
+    mkdir -p "$prefix/include" "$prefix/lib"
+    cp -R include/openssl "$prefix/include/"
+    cp -f libssl*.dylib libcrypto*.dylib "$prefix/lib/"
+    xcrun install_name_tool -id "$BIND_LIBCRYPTO_INSTALL_NAME" "$crypto_dylib"
+    xcrun install_name_tool -id "$BIND_LIBSSL_INSTALL_NAME" "$ssl_dylib"
+    xcrun install_name_tool -change "$crypto_dylib" \
+      "$BIND_LIBCRYPTO_INSTALL_NAME" "$ssl_dylib"
+  ) || return 1
+}
+
+build_libuv_dynamic() {  # plat prefix
+  local plat="$1"; local prefix="$2"
+  fetch_libuv_sources
+  curl_platform_vars "$plat"
+  if [ -f "$prefix/lib/libuv.dylib" ]; then
+    xcrun install_name_tool -id "$BIND_LIBUV_INSTALL_NAME" "$prefix/lib/libuv.dylib" 2>/dev/null || true
+    return 0
+  fi
+
+  local src="$BUILD/libuv/libuv-$plat-src"
+  local objdir="$BUILD/libuv/libuv-$plat-obj"
+  rm -rf "$src" "$objdir" "$prefix"
+  mkdir -p "$src" "$objdir" "$prefix/include" "$prefix/lib"
+  tar -xf "$LIBUV_TARBALL" -C "$src" --strip-components 1
+  cp -R "$src/include"/. "$prefix/include"/
+
+  local cc="$(xcrun -f clang)"
+  local uv_flags="$target_flags -fPIC -I$prefix/include -I$src/src -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_DARWIN_UNLIMITED_SELECT=1 -D_DARWIN_USE_64_BIT_INODE=1"
+  local sources=(
+    src/fs-poll.c src/idna.c src/inet.c src/random.c src/strscpy.c
+    src/strtok.c src/thread-common.c src/threadpool.c src/timer.c
+    src/uv-common.c src/uv-data-getter-setters.c src/version.c
+    src/unix/async.c src/unix/core.c src/unix/dl.c src/unix/fs.c
+    src/unix/getaddrinfo.c src/unix/getnameinfo.c src/unix/loop-watcher.c
+    src/unix/loop.c src/unix/pipe.c src/unix/poll.c src/unix/process.c
+    src/unix/random-devurandom.c src/unix/signal.c src/unix/stream.c
+    src/unix/tcp.c src/unix/thread.c src/unix/tty.c src/unix/udp.c
+    src/unix/proctitle.c src/unix/bsd-ifaddrs.c src/unix/kqueue.c
+    src/unix/random-getentropy.c src/unix/darwin-proctitle.c
+    src/unix/darwin.c src/unix/fsevents.c
+  )
+  local objects=()
+  local file obj
+  for file in "${sources[@]}"; do
+    obj="$objdir/${file//\//_}.o"
+    "$cc" -c $uv_flags "$src/$file" -o "$obj"
+    objects+=("$obj")
+  done
+  "$cc" -dynamiclib $target_flags -install_name "$BIND_LIBUV_INSTALL_NAME" \
+    "${objects[@]}" -lm -o "$prefix/lib/libuv.dylib"
 }
 
 build_curl_slice() {  # out plat
@@ -420,6 +539,295 @@ build_curl_xcframework() {
   rm -rf "$OUT/curl.xcframework"
   xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/curl.xcframework" >/dev/null
   echo "built curl -> payload/curl.xcframework ($PLATFORMS) [official curl $CURL_VERSION + OpenSSL $OPENSSL_VERSION, framework]"
+}
+
+# ---- BIND dig/nslookup: official ISC BIND + dynamic libuv/OpenSSL deps ----
+# BIND 9.20 adds a liburcu dependency even for the tool build; keep the first
+# pass lean by using the official 9.18 ESV tarball. Source trees are not patched:
+# generated headers come from BIND's own gen tool, libuv is built from its
+# upstream source list, and integration is via configure/link/install-name flags.
+write_fake_pkg_config() {  # out
+  local out="$1"
+  cat > "$out" <<'EOF'
+#!/bin/sh
+case "$1" in
+  --atleast-pkgconfig-version) exit 0 ;;
+  --exists) exit 0 ;;
+  --modversion) case "$2" in libuv) echo "$LIBUV_VERSION" ;; *) echo 1.0.0 ;; esac; exit 0 ;;
+  --cflags|--libs|--short-errors|--print-errors) exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$out"
+}
+
+fix_bind_install_names() {  # bind_src openssl_prefix
+  local src="$1"
+  local ossl="$2"
+  xcrun install_name_tool -id "$BIND_LIBISC_INSTALL_NAME" "$src/lib/isc/.libs/libisc-$BIND_VERSION.dylib"
+  xcrun install_name_tool -id "$BIND_LIBDNS_INSTALL_NAME" "$src/lib/dns/.libs/libdns-$BIND_VERSION.dylib"
+  xcrun install_name_tool -id "$BIND_LIBISCCFG_INSTALL_NAME" "$src/lib/isccfg/.libs/libisccfg-$BIND_VERSION.dylib"
+  xcrun install_name_tool -id "$BIND_LIBIRS_INSTALL_NAME" "$src/lib/irs/.libs/libirs-$BIND_VERSION.dylib"
+  local dylib
+  for dylib in "$src/lib/isc/.libs/libisc-$BIND_VERSION.dylib" \
+               "$src/lib/dns/.libs/libdns-$BIND_VERSION.dylib" \
+               "$src/lib/isccfg/.libs/libisccfg-$BIND_VERSION.dylib" \
+               "$src/lib/irs/.libs/libirs-$BIND_VERSION.dylib"; do
+    xcrun install_name_tool -change "/usr/local/lib/libisc-$BIND_VERSION.dylib" "$BIND_LIBISC_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "/usr/local/lib/libdns-$BIND_VERSION.dylib" "$BIND_LIBDNS_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "/usr/local/lib/libisccfg-$BIND_VERSION.dylib" "$BIND_LIBISCCFG_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$ossl/lib/libssl.$BIND_OPENSSL_DYLIB_SUFFIX.dylib" "$BIND_LIBSSL_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$ossl/lib/libcrypto.$BIND_OPENSSL_DYLIB_SUFFIX.dylib" "$BIND_LIBCRYPTO_INSTALL_NAME" "$dylib" 2>/dev/null || true
+  done
+}
+
+microosabi_framework_parent() {  # plat
+  local plat="$1"
+  local xcf="$OUT/MicroOSABI.xcframework"
+  local fw=""
+  [ -d "$xcf" ] || { echo "BIND: MicroOSABI.xcframework not found; build MicroOSABI first" >&2; return 1; }
+  case "$plat" in
+    iphoneos)
+      fw="$(find "$xcf" -path '*/MicroOSABI.framework' -type d | grep -v simulator | head -n 1 || true)"
+      ;;
+    iphonesimulator)
+      fw="$(find "$xcf" -path '*/MicroOSABI.framework' -type d | grep simulator | head -n 1 || true)"
+      ;;
+  esac
+  [ -n "$fw" ] || { echo "BIND: MicroOSABI.xcframework slice for $plat not found; build MicroOSABI first" >&2; return 1; }
+  dirname "$fw"
+}
+
+relink_bind_dns_libs_twolevel() {  # bind_src products uv_prefix openssl_prefix shim_obj abi_framework_parent target_flags...
+  local src="$1"; local products="$2"; local uv="$3"; local ossl="$4"
+  local shim_obj="$5"
+  local abi_parent="$6"
+  shift 6
+  local target_flags="$*"
+  local ssl_dep="$ossl/lib/libssl.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
+  local crypto_dep="$ossl/lib/libcrypto.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
+
+  find "$src/lib/isc" -name '*.o' -print > "$products/libisc-objs.rsp"
+  "$cc" -dynamiclib $target_flags -undefined error \
+    -install_name "$BIND_LIBISC_INSTALL_NAME" \
+    -o "$products/libisc.dylib" @"$products/libisc-objs.rsp" \
+    "$shim_obj" \
+    -F"$abi_parent" -framework MicroOSABI \
+    -L"$uv/lib" -L"$ossl/lib" -luv -lssl -lcrypto
+
+  find "$src/lib/dns" -name '*.o' -print > "$products/libdns-objs.rsp"
+  "$cc" -dynamiclib $target_flags -undefined error \
+    -install_name "$BIND_LIBDNS_INSTALL_NAME" \
+    -o "$products/libdns.dylib" @"$products/libdns-objs.rsp" \
+    -L"$products" -L"$uv/lib" -L"$ossl/lib" -lisc -luv -lssl -lcrypto
+
+  find "$src/lib/isccfg" -name '*.o' -print > "$products/libisccfg-objs.rsp"
+  "$cc" -dynamiclib $target_flags -undefined error \
+    -install_name "$BIND_LIBISCCFG_INSTALL_NAME" \
+    -o "$products/libisccfg.dylib" @"$products/libisccfg-objs.rsp" \
+    -L"$products" -ldns -lisc
+
+  find "$src/lib/irs" -name '*.o' -print > "$products/libirs-objs.rsp"
+  "$cc" -dynamiclib $target_flags -undefined error \
+    -install_name "$BIND_LIBIRS_INSTALL_NAME" \
+    -o "$products/libirs.dylib" @"$products/libirs-objs.rsp" \
+    -L"$products" -lisc -ldns -lisccfg
+
+  local dylib
+  for dylib in "$products/libisc.dylib" "$products/libdns.dylib" \
+               "$products/libisccfg.dylib" "$products/libirs.dylib"; do
+    xcrun install_name_tool -change "$ssl_dep" "$BIND_LIBSSL_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$crypto_dep" "$BIND_LIBCRYPTO_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$uv/lib/libuv.dylib" "$BIND_LIBUV_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libisc.dylib" "$BIND_LIBISC_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libdns.dylib" "$BIND_LIBDNS_INSTALL_NAME" "$dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libisccfg.dylib" "$BIND_LIBISCCFG_INSTALL_NAME" "$dylib" 2>/dev/null || true
+  done
+}
+
+build_bind_dns_tools_slice_set() {  # plat product_dir
+  local plat="$1"; local products="$2"
+  fetch_bind_openssl_sources
+  fetch_bind_sources
+  fetch_libuv_sources
+  curl_platform_vars "$plat"
+
+  local cc="$(xcrun -f clang)"
+  local ar="$(xcrun -f ar)"
+  local ranlib="$(xcrun -f ranlib)"
+  local bind_src="$BUILD/bind/bind-$plat-src"
+  local ossl="$BUILD/bind/openssl-dynamic-$plat"
+  local uv="$BUILD/bind/libuv-dynamic-$plat"
+  local fake_pkg="$BUILD/bind/pkg-config-fake"
+  local host_triplet="$host"
+
+  build_openssl_dynamic "$plat" "$ossl"
+  build_libuv_dynamic "$plat" "$uv"
+  write_fake_pkg_config "$fake_pkg"
+
+  rm -rf "$bind_src" "$products"
+  mkdir -p "$bind_src" "$products"
+  tar -xf "$BIND_TARBALL" -C "$bind_src" --strip-components 1
+
+  (
+    cd "$bind_src"
+    env \
+      LIBUV_VERSION="$LIBUV_VERSION" \
+      CC="$cc" AR="$ar" RANLIB="$ranlib" PKG_CONFIG="$fake_pkg" \
+      LIBUV_CFLAGS="-I$uv/include" LIBUV_LIBS="-L$uv/lib -luv -lpthread -lm" \
+      OPENSSL_CFLAGS="-I$ossl/include" OPENSSL_LIBS="-L$ossl/lib -lssl -lcrypto" \
+      CFLAGS="$target_flags -fPIC" \
+      CPPFLAGS="-I$INCLUDE" \
+      LDFLAGS="$target_flags -L$uv/lib -L$ossl/lib" \
+      ./configure --host="$host_triplet" --disable-doh --disable-geoip \
+        --without-lmdb --without-libxml2 --without-json-c --without-zlib \
+        --without-readline --without-libidn2 --without-cmocka \
+        --without-jemalloc --without-gssapi
+    make -j"${MAKE_JOBS:-2}" -C lib/isc all
+    make -j"${MAKE_JOBS:-2}" -C lib/dns all
+    make -j"${MAKE_JOBS:-2}" -C lib/isccfg all
+    make -j"${MAKE_JOBS:-2}" -C lib/irs all
+    make -j"${MAKE_JOBS:-2}" -C bin/dig libdighost.la
+  ) || return 1
+
+  fix_bind_install_names "$bind_src" "$ossl"
+
+  cp -f "$ossl/lib/libcrypto.$BIND_OPENSSL_DYLIB_SUFFIX.dylib" "$products/libcrypto.dylib"
+  cp -f "$ossl/lib/libssl.$BIND_OPENSSL_DYLIB_SUFFIX.dylib" "$products/libssl.dylib"
+  cp -f "$uv/lib/libuv.dylib" "$products/libuv.dylib"
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$products/bind-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$products/bind-libc.o"
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  relink_bind_dns_libs_twolevel "$bind_src" "$products" "$uv" "$ossl" "$products/bind-libc.o" "$abi_parent" $target_flags
+
+  local bind_cpp="-D_FORTIFY_SOURCE=2 -include $bind_src/config.h -I$bind_src/bin/dig -I$bind_src/bin/dig/include -I$bind_src/include -I$bind_src/lib/isc/include -I$bind_src/lib/dns/include -I$bind_src/lib/irs/include -I$bind_src/lib/isccfg/include -I$bind_src/lib/bind9/include"
+  "$cc" -c $target_flags -fPIC $bind_cpp "$bind_src/lib/bind9/getaddresses.c" -o "$products/getaddresses.o"
+
+  local prog obj
+  for prog in dig nslookup; do
+    if [ "$prog" = dig ]; then
+      obj="$products/dig.o"
+      "$cc" -c $target_flags -fPIC $bind_cpp "$bind_src/bin/dig/dig.c" -o "$obj"
+    else
+      obj="$products/nslookup.o"
+      "$cc" -c $target_flags -fPIC $bind_cpp "$bind_src/bin/dig/nslookup.c" -o "$obj"
+    fi
+    "$cc" -dynamiclib $target_flags -undefined dynamic_lookup -Wl,-alias,_main,_entry \
+      "$products/bind-crt.o" "$products/bind-libc.o" "$obj" \
+      "$bind_src/bin/dig/.libs/dighost.o" "$products/getaddresses.o" \
+      "$products/libirs.dylib" "$products/libisccfg.dylib" \
+      "$products/libdns.dylib" "$products/libisc.dylib" \
+      "$products/libuv.dylib" "$products/libssl.dylib" "$products/libcrypto.dylib" \
+      -o "$products/$prog.dylib"
+    xcrun install_name_tool -id "@rpath/$prog.framework/$prog" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libirs.dylib" "$BIND_LIBIRS_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libisccfg.dylib" "$BIND_LIBISCCFG_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libdns.dylib" "$BIND_LIBDNS_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libisc.dylib" "$BIND_LIBISC_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libuv.dylib" "$BIND_LIBUV_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libssl.dylib" "$BIND_LIBSSL_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+    xcrun install_name_tool -change "$products/libcrypto.dylib" "$BIND_LIBCRYPTO_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
+  done
+}
+
+build_bind_dns_tools_xcframework() {
+  local names=(libcrypto libssl libuv libisc libdns libisccfg libirs dig nslookup)
+  local name plat products fw
+  for plat in $PLATFORMS; do
+    products="$BUILD/bind/products-$plat"
+    echo "  building BIND dns tools slice set: $plat"
+    build_bind_dns_tools_slice_set "$plat" "$products" || return 1
+    for name in "${names[@]}"; do
+      fw="$BUILD/bind/$plat/$name.framework"
+      make_framework "$products/$name.dylib" "$fw" "$name" "$plat"
+    done
+  done
+  for name in "${names[@]}"; do
+    local fws=()
+    for plat in $PLATFORMS; do
+      fws+=(-framework "$BUILD/bind/$plat/$name.framework")
+    done
+    rm -rf "$OUT/$name.xcframework"
+    xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/$name.xcframework" >/dev/null
+    echo "built $name -> payload/$name.xcframework ($PLATFORMS) [official BIND $BIND_VERSION dynamic deps, framework]"
+  done
+}
+
+# ---- ifconfig: Apple network_cmds (BSD/Darwin), built without source patches ----
+# toybox ifconfig is Linux-oriented and starts from /proc/net/dev. Use Apple's
+# official network_cmds ifconfig instead: it enumerates interfaces via Darwin
+# getifaddrs/ioctl/sysctl paths. The source tree is unmodified; microOS only
+# supplies the CRT/libc shim and one userland nd6 compatibility header.
+NETWORK_CMDS_VERSION="${NETWORK_CMDS_VERSION:-329.2.2}"
+NETWORK_CMDS_SHA256="${NETWORK_CMDS_SHA256:-3bf14d573c42888910a73cc3f914d2e023defcd7d13b1e525a55b2443a5a5cfa}"
+
+fetch_network_cmds_sources() {
+  NETWORK_CMDS_TARBALL="$BUILD/network_cmds/network_cmds-$NETWORK_CMDS_VERSION.tar.gz"
+  fetch_verified_tarball network_cmds "$NETWORK_CMDS_VERSION" \
+    "https://github.com/apple-oss-distributions/network_cmds/archive/refs/tags/network_cmds-$NETWORK_CMDS_VERSION.tar.gz" \
+    "$NETWORK_CMDS_SHA256" "$NETWORK_CMDS_TARBALL"
+}
+
+build_ifconfig_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_network_cmds_sources
+
+  local sdk arch minv macsdk kern cc d src
+  sdk="$(xcrun --sdk "$plat" --show-sdk-path)"
+  cc="$(xcrun -f clang)"
+  if [ "$plat" = iphoneos ]; then
+    arch=arm64
+    minv="-miphoneos-version-min=15.0"
+  else
+    arch="$(uname -m)"
+    minv="-mios-simulator-version-min=15.0"
+  fi
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+  kern="$macsdk/System/Library/Frameworks/Kernel.framework/Versions/A/Headers"
+  d="$(dirname "$out")"
+  src="$BUILD/network_cmds/network_cmds-$plat-src"
+
+  rm -rf "$src"; mkdir -p "$src"
+  tar -xf "$NETWORK_CMDS_TARBALL" -C "$src" --strip-components 1
+
+  "$cc" -isysroot "$sdk" -arch "$arch" $minv -I "$INCLUDE" \
+    -c "$CRT/micro_os_crt.c" -o "$d/ifconfig-crt.o"
+  "$cc" -isysroot "$sdk" -arch "$arch" $minv -I "$INCLUDE" \
+    -c "$CRT/micro_os_libc_shim.c" -o "$d/ifconfig-libc.o"
+
+  local base_flags=(-isysroot "$sdk" -arch "$arch" $minv
+    -I "$INCLUDE" -I "$src/ifconfig.tproj"
+    -idirafter "$kern" -idirafter "$macsdk/usr/include")
+  local prog_flags=("${base_flags[@]}" -Dmain=entry -include micro_os_crt.h)
+  local objects=("$d/ifconfig-crt.o" "$d/ifconfig-libc.o")
+  local file obj
+  for file in ifconfig.c af_inet.c af_inet6.c af_link.c ifclone.c ifmedia.c; do
+    obj="$d/ifconfig-${file%.c}.o"
+    "$cc" -c "${prog_flags[@]}" "$src/ifconfig.tproj/$file" -o "$obj"
+    objects+=("$obj")
+  done
+
+  "$cc" -dynamiclib -undefined dynamic_lookup -isysroot "$sdk" -arch "$arch" $minv \
+    "${objects[@]}" -o "$out"
+}
+
+build_ifconfig_xcframework() {
+  fetch_network_cmds_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/ifconfig.dylib"
+    echo "  building ifconfig slice: $plat"
+    build_ifconfig_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/ifconfig.framework"
+    make_framework "$slice" "$fw" "ifconfig" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/ifconfig.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/ifconfig.xcframework" >/dev/null
+  echo "built ifconfig -> payload/ifconfig.xcframework ($PLATFORMS) [official Apple network_cmds $NETWORK_CMDS_VERSION, framework]"
 }
 
 build_vcocoa() {  # out appsrc
@@ -553,6 +961,9 @@ build_one() {
     wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
     curl)                  build_curl_xcframework ;;
+    ifconfig)              build_ifconfig_xcframework ;;
+    bind-dns-tools|dig|nslookup)
+                            build_bind_dns_tools_xcframework ;;
     demo-program)          build_xcf demo-program build_c_crt "$ROOT/samples/demo-program.c" ;;
     file-fallback-program) build_xcf file-fallback-program build_c_crt "$ROOT/samples/file-fallback-program.c" ;;
     stdin-program)         build_xcf stdin-program build_c_crt "$ROOT/samples/stdin-program.c" ;;
@@ -586,7 +997,7 @@ done
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
 SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
-OPTIONAL_PROGRAMS="curl"
+OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
   samples) GROUP_PROGRAMS="$SAMPLE_PROGRAMS" ;;

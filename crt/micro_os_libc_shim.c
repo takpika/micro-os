@@ -1,12 +1,16 @@
 #include <errno.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
+#include <pthread.h>
 #include <termios.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -21,10 +25,18 @@ typedef int (*dup2_fn_t)(int, int);
 typedef int (*fcntl_fn_t)(int, int, ...);
 typedef int (*open_fn_t)(const char *, int, ...);
 typedef int (*openat_fn_t)(int, const char *, int, ...);
+typedef int (*setsockopt_fn_t)(int, int, int, const void *, socklen_t);
 typedef int (*vfprintf_fn_t)(FILE *, const char *, va_list);
 typedef int (*fputs_fn_t)(const char *, FILE *);
 typedef size_t (*fwrite_fn_t)(const void *, size_t, size_t, FILE *);
 typedef int (*fputc_fn_t)(int, FILE *);
+typedef int (*pthread_create_fn_t)(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
+typedef int (*kill_fn_t)(pid_t, int);
+typedef int (*sigwait_fn_t)(const sigset_t *, int *);
+
+#ifndef SOL_IP
+#define SOL_IP IPPROTO_IP
+#endif
 
 enum {
     SHIM_FD_NONE = 0,
@@ -193,6 +205,49 @@ static fputc_fn_t host_fputc_fn(void) {
     return fn;
 }
 
+static pthread_create_fn_t host_pthread_create_fn(void) {
+    static pthread_create_fn_t fn = NULL;
+    if (fn == NULL) {
+        fn = (pthread_create_fn_t)dlsym(RTLD_NEXT, "pthread_create");
+    }
+    return fn;
+}
+
+static kill_fn_t host_kill_fn(void) {
+    static kill_fn_t fn = NULL;
+    if (fn == NULL) {
+        fn = (kill_fn_t)dlsym(RTLD_NEXT, "kill");
+    }
+    return fn;
+}
+
+static sigwait_fn_t host_sigwait_fn(void) {
+    static sigwait_fn_t fn = NULL;
+    if (fn == NULL) {
+        fn = (sigwait_fn_t)dlsym(RTLD_NEXT, "sigwait");
+    }
+    return fn;
+}
+
+static pthread_mutex_t shim_signal_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t shim_signal_cond = PTHREAD_COND_INITIALIZER;
+static unsigned int shim_pending_signals;
+
+struct shim_thread_start {
+    void *(*start)(void *);
+    void *arg;
+    int32_t pid;
+};
+
+static void *shim_thread_entry(void *context) {
+    struct shim_thread_start start = *(struct shim_thread_start *)context;
+    free(context);
+    if (start.pid > 0) {
+        micro_os_fork_child_begin(start.pid);
+    }
+    return start.start(start.arg);
+}
+
 static int shim_stream_kind(FILE *stream) {
     if (stream == stdout || stream == stderr || stream == stdin) {
         return shim_tty_fd_kind(fileno(stream));
@@ -336,6 +391,14 @@ static openat_fn_t host_openat_fn(void) {
     return fn;
 }
 
+static setsockopt_fn_t host_setsockopt_fn(void) {
+    static setsockopt_fn_t fn = NULL;
+    if (fn == NULL) {
+        fn = (setsockopt_fn_t)dlsym(RTLD_NEXT, "setsockopt");
+    }
+    return fn;
+}
+
 static int shim_open_host_path(const char *path, int flags, mode_t mode, int has_mode) {
     open_fn_t fn = host_open_fn();
     if (fn == NULL) {
@@ -459,6 +522,88 @@ int openat(int dirfd, const char *path, int flags, ...) {
         return fn(dirfd, path, flags, mode);
     }
     return fn(dirfd, path, flags);
+}
+
+int setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len) {
+    setsockopt_fn_t fn = host_setsockopt_fn();
+    if (fn == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+#ifdef IP_RECVTTL
+    if ((level == IPPROTO_IP || level == SOL_IP) && option_name == IP_RECVTTL) {
+        int result = fn(socket, level, option_name, option_value, option_len);
+        if (result == 0 || errno == EINVAL || errno == ENOPROTOOPT) {
+            return 0;
+        }
+        return result;
+    }
+#endif
+
+    return fn(socket, level, option_name, option_value, option_len);
+}
+
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg) {
+    pthread_create_fn_t fn = host_pthread_create_fn();
+    if (fn == NULL) {
+        return ENOSYS;
+    }
+    if (start == NULL) {
+        return EINVAL;
+    }
+
+    struct shim_thread_start *wrapped = (struct shim_thread_start *)malloc(sizeof(*wrapped));
+    if (wrapped == NULL) {
+        return ENOMEM;
+    }
+    wrapped->start = start;
+    wrapped->arg = arg;
+    wrapped->pid = micro_os_pid();
+
+    int result = fn(thread, attr, shim_thread_entry, wrapped);
+    if (result != 0) {
+        free(wrapped);
+    }
+    return result;
+}
+
+int kill(pid_t pid, int sig) {
+    if (pid == getpid() && sig > 0 && sig < (int)(sizeof(shim_pending_signals) * 8)) {
+        pthread_mutex_lock(&shim_signal_lock);
+        shim_pending_signals |= (1u << (unsigned int)sig);
+        pthread_cond_broadcast(&shim_signal_cond);
+        pthread_mutex_unlock(&shim_signal_lock);
+        return 0;
+    }
+
+    kill_fn_t fn = host_kill_fn();
+    if (fn == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return fn(pid, sig);
+}
+
+int sigwait(const sigset_t *set, int *sig) {
+    if (set == NULL || sig == NULL) {
+        return EINVAL;
+    }
+
+    pthread_mutex_lock(&shim_signal_lock);
+    for (;;) {
+        for (int candidate = 1; candidate < (int)(sizeof(shim_pending_signals) * 8); candidate++) {
+            if ((shim_pending_signals & (1u << (unsigned int)candidate)) != 0 &&
+                sigismember(set, candidate) == 1)
+            {
+                shim_pending_signals &= ~(1u << (unsigned int)candidate);
+                *sig = candidate;
+                pthread_mutex_unlock(&shim_signal_lock);
+                return 0;
+            }
+        }
+        pthread_cond_wait(&shim_signal_cond, &shim_signal_lock);
+    }
 }
 
 ssize_t write(int fd, const void *buffer, size_t count) {

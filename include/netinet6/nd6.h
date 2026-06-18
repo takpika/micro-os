@@ -1,0 +1,8 @@
+#ifndef MICRO_OS_NETINET6_ND6_H
+#define MICRO_OS_NETINET6_ND6_H
+
+#ifndef ND6_INFINITE_LIFETIME
+#define ND6_INFINITE_LIFETIME 0xffffffffU
+#endif
+
+#endif /* MICRO_OS_NETINET6_ND6_H */

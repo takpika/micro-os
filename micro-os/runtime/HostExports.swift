@@ -149,10 +149,10 @@ public func micro_os_process_termination_requested() -> Int32 {
 @_cdecl("micro_os_process_exit")
 public func micro_os_process_exit(_ code: Int32) {
     let pid = HostABI.shared.currentPID()
-    HostABI.shared.exit(pid: pid, code: code)
     if pid > 0 {
-        pthread_exit(nil)
+        HostABI.shared.exit(pid: pid, code: code)
     }
+    pthread_exit(nil)
 }
 
 @_cdecl("micro_os_spawn")

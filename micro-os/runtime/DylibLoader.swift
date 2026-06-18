@@ -93,8 +93,11 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     // image, not a symlink aliasing one; on device this gives the canonical
     // realpath that dyld caches the loaded image under.
     let dylibPath = (resolveDylibPath(pcb.dylib) as NSString).resolvingSymlinksInPath
+    let loadedStem = (((dylibPath as NSString).deletingLastPathComponent as NSString)
+        .lastPathComponent as NSString).deletingPathExtension
 
     let handle: UnsafeMutableRawPointer?
+    var simulatorPreloadHandles: [UnsafeMutableRawPointer] = []
 #if targetEnvironment(simulator)
     // Per-process isolation: dlopen a PRIVATE COPY of the dylib so each process
     // gets its own copy of the image's globals. Real programs keep mutable state
@@ -103,14 +106,61 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     // let concurrent/sequential processes corrupt each other. A distinct on-disk
     // path defeats dyld's by-realpath image caching, giving fresh __DATA. The
     // simulator does not enforce code signing, so a copy in a writable dir runs.
-    let isolatedPath = (NSTemporaryDirectory() as NSString)
-        .appendingPathComponent("micro-os-pid\(pcb.pid)-\((dylibPath as NSString).lastPathComponent)")
-    try? FileManager.default.removeItem(atPath: isolatedPath)
-    let isolated = (try? FileManager.default.copyItem(atPath: dylibPath, toPath: isolatedPath)) != nil
-    defer {
-        if isolated { try? FileManager.default.removeItem(atPath: isolatedPath) }
+    let bindToolDeps = ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"]
+    let needsIsolatedDeps = loadedStem == "dig" || loadedStem == "nslookup"
+    var simulatorLoadError: String?
+    let isolatedPath: String
+    let isolated: Bool
+    let isolatedRemovalPath: String
+
+    if needsIsolatedDeps {
+        let frameworkDir = (dylibPath as NSString).deletingLastPathComponent
+        let frameworksDir = (frameworkDir as NSString).deletingLastPathComponent
+        let tempRoot = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("micro-os-pid\(pcb.pid)-\(loadedStem)-frameworks")
+        try? FileManager.default.removeItem(atPath: tempRoot)
+        try? FileManager.default.createDirectory(atPath: tempRoot, withIntermediateDirectories: true)
+
+        for stem in bindToolDeps + [loadedStem] {
+            let src = "\(frameworksDir)/\(stem).framework"
+            let dst = "\(tempRoot)/\(stem).framework"
+            do {
+                try FileManager.default.copyItem(atPath: src, toPath: dst)
+            } catch {
+                simulatorLoadError = "copy \(stem).framework failed: \(error)"
+                break
+            }
+        }
+
+        if simulatorLoadError == nil {
+            for stem in bindToolDeps {
+                let depPath = "\(tempRoot)/\(stem).framework/\(stem)"
+                guard let depHandle = dlopen(depPath, RTLD_NOW | RTLD_LOCAL) else {
+                    simulatorLoadError = "dlopen \(stem) failed: \(String(cString: dlerror()))"
+                    break
+                }
+                simulatorPreloadHandles.append(depHandle)
+            }
+        }
+
+        isolatedPath = "\(tempRoot)/\(loadedStem).framework/\(loadedStem)"
+        isolatedRemovalPath = tempRoot
+        isolated = simulatorLoadError == nil && FileManager.default.fileExists(atPath: isolatedPath)
+    } else {
+        isolatedPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("micro-os-pid\(pcb.pid)-\((dylibPath as NSString).lastPathComponent)")
+        try? FileManager.default.removeItem(atPath: isolatedPath)
+        isolated = (try? FileManager.default.copyItem(atPath: dylibPath, toPath: isolatedPath)) != nil
+        isolatedRemovalPath = isolatedPath
     }
-    handle = dlopen(isolated ? isolatedPath : dylibPath, RTLD_NOW | RTLD_LOCAL)
+    defer {
+        if isolated { try? FileManager.default.removeItem(atPath: isolatedRemovalPath) }
+    }
+    if simulatorLoadError == nil {
+        handle = dlopen(isolated ? isolatedPath : dylibPath, RTLD_NOW | RTLD_LOCAL)
+    } else {
+        handle = nil
+    }
 #else
     // On a real device the per-process-copy trick is impossible: iOS code signing
     // (AMFI) only lets a process execute code from images signed inside the app
@@ -132,8 +182,16 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     handle = dlopen(poolPath ?? dylibPath, RTLD_NOW | RTLD_LOCAL)
 #endif
     guard let handle else {
-        let error = String(cString: dlerror())
+        let error: String
+#if targetEnvironment(simulator)
+        error = simulatorLoadError ?? String(cString: dlerror())
+#else
+        error = String(cString: dlerror())
+#endif
         HostABI.shared.write(stream: .stderr, text: "loader: dlopen failed: \(error)\n")
+        for depHandle in simulatorPreloadHandles.reversed() {
+            dlclose(depHandle)
+        }
         HostABI.shared.exit(pid: pcb.pid, code: 127)
         return nil
     }
@@ -147,6 +205,15 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
 #else
     poolOwned = poolPath != nil
 #endif
+    let keepLoadedAfterExit = poolOwned
+#if targetEnvironment(simulator)
+    // BIND dns tools spin up libisc/libuv worker threads during startup. Give
+    // those threads a short grace period before dlclose() so dyld does not
+    // unload libisc while a trampoline is still attaching.
+    let delayBeforeClose = loadedStem == "dig" || loadedStem == "nslookup"
+#else
+    let delayBeforeClose = false
+#endif
 
     HostABI.shared.setCurrentDylibHandle(handle)
 
@@ -154,6 +221,9 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
         HostABI.shared.write(stream: .stderr, text: "loader: dlsym(\"entry\") failed\n")
         HostABI.shared.clearCurrentDylibHandle()
         if !poolOwned { dlclose(handle) }
+        for depHandle in simulatorPreloadHandles.reversed() {
+            dlclose(depHandle)
+        }
         HostABI.shared.exit(pid: pcb.pid, code: 126)
         return nil
     }
@@ -161,12 +231,14 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     // A reused pool slot's image still holds the previous process's globals (it
     // can't be unloaded on device). Restore its pristine post-load __DATA so this
     // process starts clean, exactly as a freshly loaded image would.
+#if !targetEnvironment(simulator)
     if poolOwned {
         var dlinfo = Dl_info()
         if dladdr(symbol, &dlinfo) != 0 {
             micro_os_image_refresh(dlinfo.dli_fbase)
         }
     }
+#endif
 
     typealias Entry = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
     let entry = unsafeBitCast(symbol, to: Entry.self)
@@ -174,7 +246,13 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
         entry(argc, argv)
     }
     HostABI.shared.clearCurrentDylibHandle()
-    if !poolOwned { dlclose(handle) }
+    if delayBeforeClose {
+        usleep(200_000)
+    }
+    if !keepLoadedAfterExit { dlclose(handle) }
+    for depHandle in simulatorPreloadHandles.reversed() {
+        dlclose(depHandle)
+    }
     HostABI.shared.exit(pid: pcb.pid, code: code)
     return nil
 }

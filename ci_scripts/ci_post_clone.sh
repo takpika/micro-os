@@ -5,8 +5,8 @@
 # into payload/ by scripts/build-programs.sh, and the app's "Copy Payload" build
 # phase bundles them. Xcode Cloud only checks out the repo (no payload/, and no
 # private scripts/local/ recipes), so we (re)build a minimal *public* payload
-# here — the system programs, official curl, plus a couple of demo apps. lamia
-# and any other scripts/local/ program never exist on CI, so they are never built.
+# here — the system programs, official curl, plus a couple of demo apps. Private
+# scripts/local/ programs never exist on CI, so they are never built.
 #
 # Runs once, right after the clone (network is available for the toybox fetch),
 # which is before the app's xcodebuild — so payload/ is ready for Copy Payload.

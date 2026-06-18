@@ -26,6 +26,18 @@ final class ANSIConsoleParser {
     private let maxRows = 2_000
 
     func write(_ text: String, defaultColor: Color) -> [ConsoleLine] {
+        consume(text, defaultColor: defaultColor)
+        return renderedLines()
+    }
+
+    func writeBatch(_ writes: [(text: String, defaultColor: Color)]) -> [ConsoleLine] {
+        for write in writes {
+            consume(write.text, defaultColor: write.defaultColor)
+        }
+        return renderedLines()
+    }
+
+    private func consume(_ text: String, defaultColor: Color) {
         defaultForeground = defaultColor
         if !hasCustomStyle {
             style.foreground = defaultColor
@@ -59,8 +71,6 @@ final class ANSIConsoleParser {
             }
             index = text.index(after: index)
         }
-
-        return renderedLines()
     }
 
     private func put(_ character: Character) {

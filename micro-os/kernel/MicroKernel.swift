@@ -19,6 +19,8 @@ final class MicroKernel: ObservableObject {
     private let defaultTTY: PseudoTTY
     private let homeDirectory: String
     private var externalTTYBridges: [Int32: ExternalTTYBridge] = [:]
+    private var pendingConsoleWrites: [(stream: TTYStream, text: String)] = []
+    private var consoleFlushScheduled = false
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -145,6 +147,9 @@ final class MicroKernel: ObservableObject {
     }
 
     func enqueueStdin(_ text: String) {
+        if text.contains("\u{3}") {
+            interruptTTY(id: defaultTTY.id)
+        }
         let echo = defaultTTY.enqueueInput(text)
         if defaultTTY.shouldEchoInput(), !echo.isEmpty {
             write(pid: 0, stream: .stdout, text: echo)
@@ -179,6 +184,9 @@ final class MicroKernel: ObservableObject {
 
     func enqueuePseudoTTYInput(id: Int32, text: String) {
         guard let tty = pttys[id] else { return }
+        if text.contains("\u{3}") {
+            interruptTTY(id: id)
+        }
         let echo = tty.enqueueInput(text)
         if tty.shouldEchoInput(), !echo.isEmpty {
             tty.write(echo)
@@ -374,16 +382,51 @@ final class MicroKernel: ObservableObject {
 
     private func append(_ stream: TTYStream, _ text: String) {
         externalTTYBridges[defaultTTY.id]?.appendOutput(text)
-
-        let color: Color
-        switch stream {
-        case .stdout: color = .white
-        case .stderr: color = .red
-        case .system: color = .green
-        case .panic: color = .red
+        pendingConsoleWrites.append((stream: stream, text: text))
+        if stream == .system || stream == .panic {
+            flushConsoleOutput()
+        } else {
+            scheduleConsoleFlush()
         }
+    }
 
-        consoleLines = ansiParser.write(text, defaultColor: color)
+    private func scheduleConsoleFlush() {
+        guard !consoleFlushScheduled else { return }
+        consoleFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
+            self?.flushConsoleOutput()
+        }
+    }
+
+    private func flushConsoleOutput() {
+        guard !pendingConsoleWrites.isEmpty else {
+            consoleFlushScheduled = false
+            return
+        }
+        let writes = pendingConsoleWrites.map { pending in
+            (text: pending.text, defaultColor: color(for: pending.stream))
+        }
+        pendingConsoleWrites.removeAll(keepingCapacity: true)
+        consoleFlushScheduled = false
+        consoleLines = ansiParser.writeBatch(writes)
+    }
+
+    private func color(for stream: TTYStream) -> Color {
+        switch stream {
+        case .stdout: return .white
+        case .stderr: return .red
+        case .system: return .green
+        case .panic: return .red
+        }
+    }
+
+    private func interruptTTY(id: Int32) {
+        let candidates = processes.values
+            .filter { $0.ttyID == id && $0.pid != initialProcessPID }
+            .sorted { $0.pid < $1.pid }
+        guard let pid = candidates.last?.pid else { return }
+        log(.system, "tty\(id): interrupt pid=\(pid)")
+        HostABI.shared.requestTermination(pid: pid)
     }
 
     private func log(_ stream: TTYStream, _ text: String) {

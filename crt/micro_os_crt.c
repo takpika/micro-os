@@ -445,3 +445,9 @@ int micro_os_crt_execve(const char *path, char *const argv[], char *const envp[]
     (void)envp;   // env is process-global in this kernel; ignore the explicit set
     return micro_os_crt_execv(path, argv);
 }
+
+int micro_os_crt_system(const char *command) {
+    (void)command;
+    errno = ENOSYS;
+    return -1;
+}

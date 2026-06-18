@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		000000000000000200000011 /* wm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000200000001 /* wm.swift */; };
 		000000000000000200000012 /* MicroOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000200000002 /* MicroOS.swift */; };
-		000000000000000200000013 /* SwiftUIWindow in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000200000401 /* SwiftUIWindow */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,7 +35,6 @@
 		000000000000000200000030 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
-				000000000000000200000013 /* SwiftUIWindow in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -117,9 +115,6 @@
 			buildRules = (
 			);
 			name = wm;
-			packageProductDependencies = (
-				000000000000000200000401 /* SwiftUIWindow */,
-			);
 			productName = wm;
 			productReference = 000000000000000000000121 /* wm.dylib */;
 			productType = "com.apple.product-type.library.dynamic";
@@ -152,7 +147,6 @@
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				000000000000000200000400 /* XCRemoteSwiftPackageReference "swiftui-window" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -506,24 +500,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		000000000000000200000400 /* XCRemoteSwiftPackageReference "swiftui-window" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/takpika/swiftui-window.git";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		000000000000000200000401 /* SwiftUIWindow */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 000000000000000200000400 /* XCRemoteSwiftPackageReference "swiftui-window" */;
-			productName = SwiftUIWindow;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

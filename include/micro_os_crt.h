@@ -34,6 +34,7 @@ pid_t micro_os_crt_fork(void);
 int micro_os_crt_execv(const char *path, char *const argv[]);
 int micro_os_crt_execvp(const char *file, char *const argv[]);
 int micro_os_crt_execve(const char *path, char *const argv[], char *const envp[]);
+int micro_os_crt_system(const char *command);
 
 #ifdef __cplusplus
 }
@@ -63,5 +64,6 @@ int micro_os_crt_execve(const char *path, char *const argv[], char *const envp[]
 #define execv micro_os_crt_execv
 #define execvp micro_os_crt_execvp
 #define execve micro_os_crt_execve
+#define system micro_os_crt_system
 
 #endif

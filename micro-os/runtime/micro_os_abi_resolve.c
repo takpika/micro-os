@@ -38,6 +38,8 @@ void *micro_os_host_resolve(const char *name) {
     R(micro_os_process_keep_alive)
     R(micro_os_process_termination_requested)
     R(micro_os_process_exit)
+    R(micro_os_process_signal)
+    R(micro_os_process_snapshot)
     R(micro_os_spawn)
     R(micro_os_spawn_with_tty)
     R(micro_os_fork)

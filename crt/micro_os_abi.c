@@ -64,6 +64,8 @@ void micro_os_tty_set_lflag(uint32_t f) { ((void(*)(uint32_t))IMPL(micro_os_tty_
 void micro_os_process_keep_alive(void) { ((void(*)(void))IMPL(micro_os_process_keep_alive))(); }
 int32_t micro_os_process_termination_requested(void) { return ((int32_t(*)(void))IMPL(micro_os_process_termination_requested))(); }
 void micro_os_process_exit(int32_t code) { ((void(*)(int32_t))IMPL(micro_os_process_exit))(code); __builtin_unreachable(); }
+int32_t micro_os_process_signal(int32_t pid, int32_t sig) { return ((int32_t(*)(int32_t,int32_t))IMPL(micro_os_process_signal))(pid,sig); }
+int32_t micro_os_process_snapshot(micro_os_process_info_t *b, int32_t n) { return ((int32_t(*)(micro_os_process_info_t*,int32_t))IMPL(micro_os_process_snapshot))(b,n); }
 
 int32_t micro_os_spawn(const char *d, int32_t c, char **v) { return ((int32_t(*)(const char*,int32_t,char**))IMPL(micro_os_spawn))(d,c,v); }
 int32_t micro_os_spawn_with_tty(const char *d, int32_t c, char **v, int32_t t) {

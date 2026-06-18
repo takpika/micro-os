@@ -196,6 +196,34 @@ public func micro_os_process_exit(_ code: Int32) {
     pthread_exit(nil)
 }
 
+@_cdecl("micro_os_process_signal")
+public func micro_os_process_signal(_ pid: Int32, _ signal: Int32) -> Int32 {
+    HostABI.shared.signal(pid: pid, signal: signal) ? 0 : -1
+}
+
+@_cdecl("micro_os_process_snapshot")
+public func micro_os_process_snapshot(_ buffer: UnsafeMutableRawPointer?, _ maxEntries: Int32) -> Int32 {
+    let snapshot = HostABI.shared.processSnapshot()
+    guard let buffer, maxEntries > 0 else {
+        return Int32(snapshot.count)
+    }
+
+    let entrySize = 344
+    let count = min(snapshot.count, Int(maxEntries))
+    for (index, process) in snapshot.prefix(count).enumerated() {
+        let base = buffer.advanced(by: index * entrySize)
+        base.storeBytes(of: process.pid, toByteOffset: 0, as: Int32.self)
+        base.storeBytes(of: process.parentPID, toByteOffset: 4, as: Int32.self)
+        base.storeBytes(of: process.ttyID, toByteOffset: 8, as: Int32.self)
+        base.storeBytes(of: Int32(2), toByteOffset: 12, as: Int32.self)
+        let startMS = UInt64(max(0, process.startTime.timeIntervalSince1970 * 1000))
+        base.storeBytes(of: startMS, toByteOffset: 16, as: UInt64.self)
+        writeCString(process.command, to: base.advanced(by: 24), capacity: 64)
+        writeArgv(process.argv, to: base.advanced(by: 88), capacity: 256)
+    }
+    return Int32(snapshot.count)
+}
+
 @_cdecl("micro_os_spawn")
 public func micro_os_spawn(
     _ dylib: UnsafePointer<CChar>?,
@@ -374,4 +402,31 @@ public func micro_os_fd_lseek(_ fd: Int32, _ offset: Int64, _ whence: Int32) -> 
 func string(from pointer: UnsafePointer<CChar>?) -> String {
     guard let pointer else { return "" }
     return String(cString: pointer)
+}
+
+private func writeCString(_ value: String, to pointer: UnsafeMutableRawPointer, capacity: Int) {
+    guard capacity > 0 else { return }
+    memset(pointer, 0, capacity)
+    let bytes = Array(value.utf8.prefix(capacity - 1))
+    for (index, byte) in bytes.enumerated() {
+        pointer.storeBytes(of: byte, toByteOffset: index, as: UInt8.self)
+    }
+}
+
+private func writeArgv(_ argv: [String], to pointer: UnsafeMutableRawPointer, capacity: Int) {
+    guard capacity > 0 else { return }
+    memset(pointer, 0, capacity)
+    var offset = 0
+    for argument in argv {
+        if offset >= capacity - 1 {
+            break
+        }
+        let bytes = Array(argument.utf8.prefix(capacity - offset - 1))
+        for (index, byte) in bytes.enumerated() {
+            pointer.storeBytes(of: byte, toByteOffset: offset + index, as: UInt8.self)
+        }
+        offset += bytes.count
+        pointer.storeBytes(of: UInt8(0), toByteOffset: offset, as: UInt8.self)
+        offset += 1
+    }
 }

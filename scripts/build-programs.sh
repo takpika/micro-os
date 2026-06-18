@@ -144,9 +144,8 @@ build_c_crt() {  # out source...
     -include micro_os_crt.h "$@" "$d/crt.o" "$d/libc.o" -o "$out"
 }
 
-# wm is a real Xcode target (it depends on the SwiftUIWindow SPM package). Build
-# it per platform with xcodebuild, then pack the slices into an xcframework.
-# This is independent of the app target, so the app stays a pure kernel.
+# wm is a standalone Xcode target. Build it only when explicitly requested, then
+# pack the slices into an xcframework. The app scheme does not depend on wm.
 build_wm_xcframework() {
   fws=()
   for plat in $PLATFORMS; do
@@ -224,7 +223,7 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
     # upstream toybox applets; /proc, /dev, and Linux-netlink based tools are
     # deliberately left out instead of faking platform data in the shim.
     en(){ sed -i '' "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config; }
-    for applet in DIFF HOST PING PING6 PS PGREP PKILL TELNET UPTIME; do en "$applet"; done
+    for applet in DIFF HOST PING PING6 TELNET; do en "$applet"; done
     sed -i '' 's/^CONFIG_IFCONFIG=y$/# CONFIG_IFCONFIG is not set/' .config
     sed -i '' 's/^CONFIG_IP=y$/# CONFIG_IP is not set/' .config
     # linux32 needs personality() — a Linux syscall absent on Apple platforms
@@ -1217,6 +1216,133 @@ build_apple_uptime_xcframework() {
   echo "built uptime -> payload/uptime.xcframework ($PLATFORMS) [official Apple shell_cmds $SHELL_CMDS_VERSION w.c, framework]"
 }
 
+# ---- ps/pkill: official Apple adv_cmds, built without source patches ----
+ADV_CMDS_VERSION="${ADV_CMDS_VERSION:-adv_cmds-237}"
+APPLE_PS_C_SHA256="${APPLE_PS_C_SHA256:-d338ad022a81a53a3f34149778b0a3dbe3e31b154395589c333c080ad308ea5a}"
+APPLE_PS_H_SHA256="${APPLE_PS_H_SHA256:-3d8fd34c753f2ba15271fd68dd9f7ccb75c33fd3c3e5fbfcbad39e36fa809dea}"
+APPLE_PS_EXTERN_H_SHA256="${APPLE_PS_EXTERN_H_SHA256:-d0d16190c082405dbc3f290dce644d00fbd30f6c1c8a6994e57ccd3fcf45a8f8}"
+APPLE_PS_FMT_C_SHA256="${APPLE_PS_FMT_C_SHA256:-ea41470d63d9e4d67baedd4f33fa175571636bcdf41b32f7fa1f17dccbc7b705}"
+APPLE_PS_KEYWORD_C_SHA256="${APPLE_PS_KEYWORD_C_SHA256:-0af8cc559f9e7e830e5568eb61769df806be8b80a22f3745beeab6431ffa6444}"
+APPLE_PS_NLIST_C_SHA256="${APPLE_PS_NLIST_C_SHA256:-57b106ae485b2dd181fc07ead8dcfeb6f4b755733a84fba40440732bc868a11b}"
+APPLE_PS_PRINT_C_SHA256="${APPLE_PS_PRINT_C_SHA256:-9f3b9e89bd6e58b9db68919189e34136cb903ed60dd6f06650d77e50a47aa40f}"
+APPLE_PS_TASKS_C_SHA256="${APPLE_PS_TASKS_C_SHA256:-56d7b23faa1f6387fa7f53561d4ecd7011ada80af9f39346d58d803b84e9432d}"
+APPLE_PKILL_C_SHA256="${APPLE_PKILL_C_SHA256:-19b5c405181a1e27309aa54527103a5ec1e7391b6c865c24dc84817579be5b98}"
+
+fetch_adv_cmds_sources() {
+  local base="https://raw.githubusercontent.com/apple-oss-distributions/adv_cmds/$ADV_CMDS_VERSION"
+  ADV_CMDS_DIR="$BUILD/apple-adv-cmds/$ADV_CMDS_VERSION"
+  mkdir -p "$ADV_CMDS_DIR"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-ps.c" \
+    "$base/ps/ps.c" "$APPLE_PS_C_SHA256" "$ADV_CMDS_DIR/ps.c"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-ps.h" \
+    "$base/ps/ps.h" "$APPLE_PS_H_SHA256" "$ADV_CMDS_DIR/ps.h"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-extern.h" \
+    "$base/ps/extern.h" "$APPLE_PS_EXTERN_H_SHA256" "$ADV_CMDS_DIR/extern.h"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-fmt.c" \
+    "$base/ps/fmt.c" "$APPLE_PS_FMT_C_SHA256" "$ADV_CMDS_DIR/fmt.c"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-keyword.c" \
+    "$base/ps/keyword.c" "$APPLE_PS_KEYWORD_C_SHA256" "$ADV_CMDS_DIR/keyword.c"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-nlist.c" \
+    "$base/ps/nlist.c" "$APPLE_PS_NLIST_C_SHA256" "$ADV_CMDS_DIR/nlist.c"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-print.c" \
+    "$base/ps/print.c" "$APPLE_PS_PRINT_C_SHA256" "$ADV_CMDS_DIR/print.c"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-tasks.c" \
+    "$base/ps/tasks.c" "$APPLE_PS_TASKS_C_SHA256" "$ADV_CMDS_DIR/tasks.c"
+  fetch_verified_file apple-adv-cmds "$ADV_CMDS_VERSION-pkill.c" \
+    "$base/pkill/pkill.c" "$APPLE_PKILL_C_SHA256" "$ADV_CMDS_DIR/pkill.c"
+}
+
+build_apple_ps_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_adv_cmds_sources
+  curl_platform_vars "$plat"
+
+  local cc d macsdk compat flags objects file obj
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+  compat="$BUILD/apple-adv-cmds/compat-$plat"
+  rm -rf "$compat"; mkdir -p "$compat/mach"
+  cp "$macsdk/usr/include/mach/mach_vm.h" "$compat/mach/mach_vm.h"
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/ps-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/ps-libc.o"
+
+  flags=(-Os -ffunction-sections -fdata-sections -fblocks $target_flags
+    -Dmain=entry -DKERN_PROC_RGID=KERN_PROC_ALL -DKERN_PROC_INC_THREAD=0
+    -Wno-deprecated-non-prototype -Wno-incompatible-pointer-types-discards-qualifiers
+    -I "$INCLUDE" -I "$ADV_CMDS_DIR" -I "$compat" -idirafter "$macsdk/usr/include"
+    -F"$macsdk/System/Library/Frameworks" -iframework "$macsdk/System/Library/Frameworks"
+    -include micro_os_crt.h)
+  objects=("$d/ps-crt.o" "$d/ps-libc.o")
+  for file in ps.c fmt.c keyword.c nlist.c print.c tasks.c; do
+    obj="$d/ps-${file%.c}.o"
+    "$cc" -c "${flags[@]}" "$ADV_CMDS_DIR/$file" -o "$obj"
+    objects+=("$obj")
+  done
+  "$cc" -dynamiclib -undefined dynamic_lookup -Wl,-dead_strip $target_flags \
+    "${objects[@]}" -o "$out"
+  validate_unexpected_undefineds "$out" ps "$plat"
+}
+
+build_apple_ps_xcframework() {
+  fetch_adv_cmds_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/ps.dylib"
+    echo "  building ps slice: $plat"
+    build_apple_ps_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/ps.framework"
+    make_framework "$slice" "$fw" "ps" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/ps.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/ps.xcframework" >/dev/null
+  echo "built ps -> payload/ps.xcframework ($PLATFORMS) [official Apple adv_cmds $ADV_CMDS_VERSION, framework]"
+}
+
+build_apple_pkill_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_adv_cmds_sources
+  curl_platform_vars "$plat"
+
+  local cc d macsdk
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/pkill-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/pkill-libc.o"
+  "$cc" -c $target_flags -fblocks -I "$INCLUDE" "$CRT/micro_os_sysmon_shim.c" -o "$d/pkill-sysmon.o"
+  "$cc" -c -Os -ffunction-sections -fdata-sections -fblocks $target_flags \
+    -Dmain=entry -Wno-deprecated-non-prototype \
+    -I "$INCLUDE" -I "$ADV_CMDS_DIR" -idirafter "$macsdk/usr/include" \
+    -include micro_os_crt.h \
+    "$ADV_CMDS_DIR/pkill.c" -o "$d/pkill-main.o"
+  "$cc" -dynamiclib -undefined dynamic_lookup -Wl,-dead_strip $target_flags \
+    "$d/pkill-main.o" "$d/pkill-sysmon.o" "$d/pkill-crt.o" "$d/pkill-libc.o" \
+    -o "$out"
+  validate_unexpected_undefineds "$out" pkill "$plat"
+}
+
+build_apple_pkill_xcframework() {
+  fetch_adv_cmds_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/pkill.dylib"
+    echo "  building pkill slice: $plat"
+    build_apple_pkill_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/pkill.framework"
+    make_framework "$slice" "$fw" "pkill" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/pkill.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/pkill.xcframework" >/dev/null
+  echo "built pkill -> payload/pkill.xcframework ($PLATFORMS) [official Apple adv_cmds $ADV_CMDS_VERSION, framework]"
+}
+
 # ---- fastfetch: official upstream CMake project, built without source patches ----
 FASTFETCH_VERSION="${FASTFETCH_VERSION:-2.52.0}"
 FASTFETCH_SHA256="${FASTFETCH_SHA256:-6199c4cacc0b411fde7ec6c66d12829459284c6cdfb4bacce7b535190d5cd94c}"
@@ -1477,6 +1603,8 @@ build_one() {
     unzip)                 build_infozip_xcframework unzip build_unzip_slice ;;
     whois)                 build_whois_xcframework ;;
     uptime)                build_apple_uptime_xcframework ;;
+    ps)                    build_apple_ps_xcframework ;;
+    pkill)                 build_apple_pkill_xcframework ;;
     fastfetch)             build_fastfetch_xcframework ;;
     bind-dns-tools|dig|nslookup)
                             build_bind_dns_tools_xcframework ;;
@@ -1513,7 +1641,7 @@ done
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
 SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
-OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip whois uptime fastfetch"
+OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip whois uptime ps pkill fastfetch"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
   samples) GROUP_PROGRAMS="$SAMPLE_PROGRAMS" ;;

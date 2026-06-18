@@ -242,6 +242,7 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
 
     typealias Entry = @convention(c) (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
     let entry = unsafeBitCast(symbol, to: Entry.self)
+    resetLibcProcessGlobals()
     let code = withCArgv(pcb.argv) { argc, argv in
         entry(argc, argv)
     }
@@ -255,6 +256,15 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     }
     HostABI.shared.exit(pid: pcb.pid, code: code)
     return nil
+}
+
+private func resetLibcProcessGlobals() {
+    if let optindPointer = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "optind") {
+        optindPointer.assumingMemoryBound(to: Int32.self).pointee = 1
+    }
+    if let optresetPointer = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "optreset") {
+        optresetPointer.assumingMemoryBound(to: Int32.self).pointee = 1
+    }
 }
 
 func resolveDylibPath(_ name: String) -> String {

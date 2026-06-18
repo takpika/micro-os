@@ -319,6 +319,36 @@ final class HostABI {
         signal?.signal()
     }
 
+    func signal(pid: Int32, signal: Int32) -> Bool {
+        if Thread.isMainThread {
+            return kernel?.signal(pid: pid, signal: signal) ?? false
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.signal(pid: pid, signal: signal) ?? false
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func processSnapshot() -> [KernelProcessInfo] {
+        if Thread.isMainThread {
+            return kernel?.processSnapshot() ?? []
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: [KernelProcessInfo] = []
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.processSnapshot() ?? []
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
     func registerService(name: String, pointer: UnsafeMutableRawPointer?) {
         guard let pointer else { return }
         let pid = currentPID()

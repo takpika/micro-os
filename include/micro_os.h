@@ -42,6 +42,7 @@ void micro_os_process_keep_alive(void);
 // out and let the app's own main() clean up (close window, stop audio, …).
 int32_t micro_os_process_termination_requested(void);
 void micro_os_process_exit(int32_t code) __attribute__((noreturn));
+int32_t micro_os_process_signal(int32_t pid, int32_t signal);
 int32_t micro_os_spawn(const char *dylib, int32_t argc, char **argv);
 int32_t micro_os_spawn_with_tty(const char *dylib, int32_t argc, char **argv, int32_t ttyID);
 int32_t micro_os_fork(void);
@@ -60,6 +61,21 @@ int32_t micro_os_fd_pipe(int32_t fds[2]);
 int32_t micro_os_fd_read(int32_t fd, void *buffer, int32_t count);
 int32_t micro_os_fd_write(int32_t fd, const void *buffer, int32_t count);
 int64_t micro_os_fd_lseek(int32_t fd, int64_t offset, int32_t whence);
+
+#define MICRO_OS_PROCESS_COMMAND_LENGTH 64
+#define MICRO_OS_PROCESS_ARGV_LENGTH 256
+
+typedef struct micro_os_process_info {
+    int32_t pid;
+    int32_t parent_pid;
+    int32_t tty_id;
+    int32_t state;
+    uint64_t start_time_ms;
+    char command[MICRO_OS_PROCESS_COMMAND_LENGTH];
+    char argv[MICRO_OS_PROCESS_ARGV_LENGTH];
+} micro_os_process_info_t;
+
+int32_t micro_os_process_snapshot(micro_os_process_info_t *buffer, int32_t maxEntries);
 
 typedef int32_t (*micro_os_entry_fn)(int32_t argc, char **argv);
 typedef int32_t (*micro_os_wm_open_window_fn)(int32_t ownerPID, const char *title, void *retainedPlatformView, double width, double height);

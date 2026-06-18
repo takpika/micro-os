@@ -323,6 +323,32 @@ final class MicroKernel: ObservableObject {
         HostABI.shared.requestTermination(pid: pid)
     }
 
+    func signal(pid: Int32, signal: Int32) -> Bool {
+        guard processes[pid] != nil else {
+            return false
+        }
+        if signal == 0 {
+            return true
+        }
+        log(.system, "signal: pid=\(pid) sig=\(signal) requested")
+        HostABI.shared.requestTermination(pid: pid)
+        return true
+    }
+
+    func processSnapshot() -> [KernelProcessInfo] {
+        processes.values
+            .sorted { $0.pid < $1.pid }
+            .map {
+                KernelProcessInfo(
+                    pid: $0.pid,
+                    parentPID: $0.parentPID,
+                    ttyID: $0.ttyID,
+                    startTime: $0.startTime,
+                    argv: $0.argv
+                )
+            }
+    }
+
     func triggerPanic(_ message: String) {
         log(.panic, "panic: \(message)")
     }

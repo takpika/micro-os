@@ -8,6 +8,7 @@ final class ProcessControlBlock {
     let home: String
     let ttyID: Int32
     let parentPID: Int32
+    let startTime: Date
     var thread: pthread_t?
     var exitCode: Int32?
 
@@ -18,6 +19,19 @@ final class ProcessControlBlock {
         self.home = home
         self.ttyID = ttyID
         self.parentPID = parentPID
+        self.startTime = Date()
+    }
+}
+
+struct KernelProcessInfo {
+    let pid: Int32
+    let parentPID: Int32
+    let ttyID: Int32
+    let startTime: Date
+    let argv: [String]
+
+    var command: String {
+        argv.first ?? ""
     }
 }
 

@@ -8,7 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/proc.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/wait.h>
 #include <pthread.h>
 #include <termios.h>
@@ -16,6 +19,10 @@
 #include <unistd.h>
 
 #include "micro_os.h"
+
+#ifndef KERN_PROC_INC_THREAD
+#define KERN_PROC_INC_THREAD 0
+#endif
 
 typedef ssize_t (*read_fn_t)(int, void *, size_t);
 typedef ssize_t (*write_fn_t)(int, const void *, size_t);
@@ -33,6 +40,8 @@ typedef int (*fputc_fn_t)(int, FILE *);
 typedef int (*pthread_create_fn_t)(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
 typedef int (*kill_fn_t)(pid_t, int);
 typedef int (*sigwait_fn_t)(const sigset_t *, int *);
+typedef int (*sysctl_fn_t)(int *, u_int, void *, size_t *, void *, size_t);
+typedef int (*sysctlbyname_fn_t)(const char *, void *, size_t *, void *, size_t);
 
 #ifndef SOL_IP
 #define SOL_IP IPPROTO_IP
@@ -229,9 +238,26 @@ static sigwait_fn_t host_sigwait_fn(void) {
     return fn;
 }
 
+static sysctl_fn_t host_sysctl_fn(void) {
+    static sysctl_fn_t fn = NULL;
+    if (fn == NULL) {
+        fn = (sysctl_fn_t)dlsym(RTLD_NEXT, "sysctl");
+    }
+    return fn;
+}
+
+static sysctlbyname_fn_t host_sysctlbyname_fn(void) {
+    static sysctlbyname_fn_t fn = NULL;
+    if (fn == NULL) {
+        fn = (sysctlbyname_fn_t)dlsym(RTLD_NEXT, "sysctlbyname");
+    }
+    return fn;
+}
+
 static pthread_mutex_t shim_signal_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t shim_signal_cond = PTHREAD_COND_INITIALIZER;
 static unsigned int shim_pending_signals;
+static _Thread_local char shim_program_name[MICRO_OS_PROCESS_COMMAND_LENGTH];
 
 struct shim_thread_start {
     void *(*start)(void *);
@@ -417,42 +443,10 @@ static int shim_open_memory(const char *text) {
     return shim_open_host_virtual(SHIM_FD_MEM, source, length);
 }
 
-static int shim_open_proc_path(const char *path) {
-    char buffer[512];
-    if (strcmp(path, "/proc/self/stat") == 0) {
-        snprintf(buffer, sizeof(buffer), "%ld (process) R 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0\n", (long)getpid());
-        return shim_open_memory(buffer);
-    }
-    if (strcmp(path, "/proc/self/status") == 0) {
-        snprintf(buffer, sizeof(buffer), "Name:\tprocess\nPid:\t%ld\nPPid:\t0\nState:\tR (running)\n", (long)getpid());
-        return shim_open_memory(buffer);
-    }
-    if (strcmp(path, "/proc/self/cmdline") == 0) {
-        return shim_open_memory("process");
-    }
-    if (strcmp(path, "/proc/self/fd/0") == 0 || strcmp(path, "/proc/curproc/fd/0") == 0) {
-        return dup(STDIN_FILENO);
-    }
-    if (strcmp(path, "/proc/self/fd/1") == 0 || strcmp(path, "/proc/curproc/fd/1") == 0) {
-        return dup(STDOUT_FILENO);
-    }
-    if (strcmp(path, "/proc/self/fd/2") == 0 || strcmp(path, "/proc/curproc/fd/2") == 0) {
-        return dup(STDERR_FILENO);
-    }
-    errno = ENOENT;
-    return -1;
-}
-
 static int shim_open_dev_path(const char *path, int flags, mode_t mode, int has_mode) {
     if (path == NULL) {
         errno = EFAULT;
         return -1;
-    }
-    if (strncmp(path, "/proc/", 6) == 0) {
-        (void)flags;
-        (void)mode;
-        (void)has_mode;
-        return shim_open_proc_path(path);
     }
     if (strcmp(path, "/dev/stdin") == 0) {
         return dup(STDIN_FILENO);
@@ -568,6 +562,264 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
     return result;
 }
 
+static int shim_snapshot(micro_os_process_info_t **out, int32_t *count) {
+    int32_t needed = micro_os_process_snapshot(NULL, 0);
+    if (needed <= 0) {
+        *out = NULL;
+        *count = 0;
+        return 0;
+    }
+    micro_os_process_info_t *items = (micro_os_process_info_t *)calloc((size_t)needed, sizeof(*items));
+    if (items == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    int32_t actual = micro_os_process_snapshot(items, needed);
+    if (actual < 0) {
+        free(items);
+        errno = EIO;
+        return -1;
+    }
+    if (actual > needed) {
+        actual = needed;
+    }
+    *out = items;
+    *count = actual;
+    return 0;
+}
+
+static const micro_os_process_info_t *shim_find_process_info(pid_t pid, micro_os_process_info_t *items, int32_t count) {
+    for (int32_t i = 0; i < count; i++) {
+        if (items[i].pid == (int32_t)pid) {
+            return &items[i];
+        }
+    }
+    return NULL;
+}
+
+static int shim_copy_sysctl_value(const void *source, size_t source_size, void *oldp, size_t *oldlenp) {
+    if (oldlenp == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (oldp == NULL) {
+        *oldlenp = source_size;
+        return 0;
+    }
+    if (*oldlenp < source_size) {
+        *oldlenp = source_size;
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(oldp, source, source_size);
+    *oldlenp = source_size;
+    return 0;
+}
+
+static int shim_process_matches_sysctl(const micro_os_process_info_t *info, int selector, int value) {
+    selector &= ~KERN_PROC_INC_THREAD;
+    switch (selector) {
+    case KERN_PROC_ALL:
+        return 1;
+    case KERN_PROC_PID:
+        return info->pid == value;
+    case KERN_PROC_PGRP:
+    case KERN_PROC_SESSION:
+        return info->parent_pid == value || info->pid == value;
+    case KERN_PROC_TTY:
+        return info->tty_id == value;
+    case KERN_PROC_UID:
+    case KERN_PROC_RUID:
+        return getuid() == (uid_t)value;
+#ifdef KERN_PROC_RGID
+    case KERN_PROC_RGID:
+        return getgid() == (gid_t)value;
+#endif
+    default:
+        return 1;
+    }
+}
+
+static void shim_fill_kinfo_proc(struct kinfo_proc *kp, const micro_os_process_info_t *info) {
+    memset(kp, 0, sizeof(*kp));
+    kp->kp_proc.p_pid = (pid_t)info->pid;
+    kp->kp_proc.p_stat = (char)(info->state != 0 ? info->state : SRUN);
+    kp->kp_proc.p_flag = P_CONTROLT | P_LP64;
+    kp->kp_proc.p_priority = 31;
+    kp->kp_proc.p_usrpri = 31;
+    kp->kp_proc.p_starttime.tv_sec = (time_t)(info->start_time_ms / 1000);
+    kp->kp_proc.p_starttime.tv_usec = (suseconds_t)((info->start_time_ms % 1000) * 1000);
+    snprintf(kp->kp_proc.p_comm, sizeof(kp->kp_proc.p_comm), "%s", info->command[0] ? info->command : "process");
+
+    kp->kp_eproc.e_ppid = (pid_t)info->parent_pid;
+    kp->kp_eproc.e_pgid = (pid_t)(info->parent_pid > 0 ? info->parent_pid : info->pid);
+    kp->kp_eproc.e_tdev = (dev_t)info->tty_id;
+    kp->kp_eproc.e_tpgid = (pid_t)kp->kp_eproc.e_pgid;
+    kp->kp_eproc.e_pcred.p_ruid = getuid();
+    kp->kp_eproc.e_pcred.p_svuid = getuid();
+    kp->kp_eproc.e_pcred.p_rgid = getgid();
+    kp->kp_eproc.e_pcred.p_svgid = getgid();
+    kp->kp_eproc.e_ucred.cr_uid = getuid();
+    kp->kp_eproc.e_ucred.cr_ngroups = 1;
+    kp->kp_eproc.e_ucred.cr_groups[0] = getgid();
+    kp->kp_eproc.e_flag = EPROC_CTTY;
+}
+
+static int shim_sysctl_kern_proc(int *name, u_int namelen, void *oldp, size_t *oldlenp) {
+    if (namelen < 3 || oldlenp == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int selector = name[2];
+    int value = namelen >= 4 ? name[3] : 0;
+    micro_os_process_info_t *items = NULL;
+    int32_t count = 0;
+    if (shim_snapshot(&items, &count) != 0) {
+        return -1;
+    }
+
+    size_t matches = 0;
+    for (int32_t i = 0; i < count; i++) {
+        if (shim_process_matches_sysctl(&items[i], selector, value)) {
+            matches++;
+        }
+    }
+
+    size_t required = matches * sizeof(struct kinfo_proc);
+    if (oldp == NULL) {
+        *oldlenp = required;
+        free(items);
+        return 0;
+    }
+    if (*oldlenp < required) {
+        *oldlenp = required;
+        free(items);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    struct kinfo_proc *kp = (struct kinfo_proc *)oldp;
+    size_t out = 0;
+    for (int32_t i = 0; i < count; i++) {
+        if (shim_process_matches_sysctl(&items[i], selector, value)) {
+            shim_fill_kinfo_proc(&kp[out++], &items[i]);
+        }
+    }
+    *oldlenp = required;
+    free(items);
+    return 0;
+}
+
+static int shim_count_argv(const char *argv, size_t capacity) {
+    int argc = 0;
+    size_t offset = 0;
+    while (offset < capacity && argv[offset] != '\0') {
+        argc++;
+        offset += strnlen(argv + offset, capacity - offset) + 1;
+    }
+    return argc;
+}
+
+static int shim_sysctl_procargs2(pid_t pid, void *oldp, size_t *oldlenp) {
+    micro_os_process_info_t *items = NULL;
+    int32_t count = 0;
+    if (shim_snapshot(&items, &count) != 0) {
+        return -1;
+    }
+    const micro_os_process_info_t *info = shim_find_process_info(pid, items, count);
+    if (info == NULL) {
+        free(items);
+        errno = ESRCH;
+        return -1;
+    }
+
+    int argc = shim_count_argv(info->argv, sizeof(info->argv));
+    const char *exec_path = info->command[0] ? info->command : "process";
+    size_t exec_len = strlen(exec_path) + 1;
+    size_t argv_len = strnlen(info->argv, sizeof(info->argv));
+    if (argv_len < sizeof(info->argv)) {
+        size_t offset = 0;
+        while (offset < sizeof(info->argv) && info->argv[offset] != '\0') {
+            offset += strnlen(info->argv + offset, sizeof(info->argv) - offset) + 1;
+        }
+        argv_len = offset + 1;
+    } else {
+        argv_len = sizeof(info->argv);
+    }
+
+    size_t required = sizeof(int) + exec_len + 1 + argv_len;
+    char *buffer = (char *)calloc(1, required);
+    if (buffer == NULL) {
+        free(items);
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(buffer, &argc, sizeof(argc));
+    size_t offset = sizeof(argc);
+    memcpy(buffer + offset, exec_path, exec_len);
+    offset += exec_len + 1;
+    memcpy(buffer + offset, info->argv, argv_len);
+
+    int result = shim_copy_sysctl_value(buffer, required, oldp, oldlenp);
+    free(buffer);
+    free(items);
+    return result;
+}
+
+int sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (newp != NULL || newlen != 0) {
+        errno = EPERM;
+        return -1;
+    }
+    if (name == NULL || namelen < 2) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (name[0] == CTL_KERN && name[1] == KERN_PROC) {
+        return shim_sysctl_kern_proc(name, namelen, oldp, oldlenp);
+    }
+    if (name[0] == CTL_KERN && name[1] == KERN_PROCARGS2 && namelen >= 3) {
+        return shim_sysctl_procargs2((pid_t)name[2], oldp, oldlenp);
+    }
+    if (name[0] == CTL_KERN && name[1] == KERN_ARGMAX) {
+        int argmax = 4096;
+        return shim_copy_sysctl_value(&argmax, sizeof(argmax), oldp, oldlenp);
+    }
+
+    sysctl_fn_t fn = host_sysctl_fn();
+    if (fn == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return fn(name, namelen, oldp, oldlenp, newp, newlen);
+}
+
+int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (name == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (strcmp(name, "kern.argmax") == 0) {
+        int argmax = 4096;
+        return shim_copy_sysctl_value(&argmax, sizeof(argmax), oldp, oldlenp);
+    }
+    if (strcmp(name, "kern.fscale") == 0) {
+        int fscale = 100;
+        return shim_copy_sysctl_value(&fscale, sizeof(fscale), oldp, oldlenp);
+    }
+    if (strcmp(name, "kern.ccpu") == 0) {
+        fixpt_t ccpu = 0;
+        return shim_copy_sysctl_value(&ccpu, sizeof(ccpu), oldp, oldlenp);
+    }
+    sysctlbyname_fn_t fn = host_sysctlbyname_fn();
+    if (fn == NULL) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return fn(name, oldp, oldlenp, newp, newlen);
+}
+
 int kill(pid_t pid, int sig) {
     if (pid == getpid() && sig > 0 && sig < (int)(sizeof(shim_pending_signals) * 8)) {
         pthread_mutex_lock(&shim_signal_lock);
@@ -575,6 +827,13 @@ int kill(pid_t pid, int sig) {
         pthread_cond_broadcast(&shim_signal_cond);
         pthread_mutex_unlock(&shim_signal_lock);
         return 0;
+    }
+    if (pid > 0) {
+        if (micro_os_process_signal((int32_t)pid, (int32_t)sig) == 0) {
+            return 0;
+        }
+        errno = ESRCH;
+        return -1;
     }
 
     kill_fn_t fn = host_kill_fn();
@@ -828,6 +1087,56 @@ ssize_t read(int fd, void *buffer, size_t count) {
 
 pid_t getpid(void) {
     return (pid_t)micro_os_pid();
+}
+
+pid_t getppid(void) {
+    micro_os_process_info_t *items = NULL;
+    int32_t count = 0;
+    if (shim_snapshot(&items, &count) != 0) {
+        return 0;
+    }
+    pid_t pid = getpid();
+    pid_t parent = 0;
+    const micro_os_process_info_t *info = shim_find_process_info(pid, items, count);
+    if (info != NULL) {
+        parent = (pid_t)info->parent_pid;
+    }
+    free(items);
+    return parent;
+}
+
+const char *getprogname(void) {
+    if (shim_program_name[0] != '\0') {
+        return shim_program_name;
+    }
+
+    micro_os_process_info_t *items = NULL;
+    int32_t count = 0;
+    if (shim_snapshot(&items, &count) != 0) {
+        return "micro-os";
+    }
+    const micro_os_process_info_t *info = shim_find_process_info(getpid(), items, count);
+    if (info != NULL && info->command[0] != '\0') {
+        snprintf(shim_program_name, sizeof(shim_program_name), "%s", info->command);
+    }
+    free(items);
+    return shim_program_name[0] != '\0' ? shim_program_name : "micro-os";
+}
+
+void setprogname(const char *name) {
+    if (name == NULL || name[0] == '\0') {
+        shim_program_name[0] = '\0';
+        return;
+    }
+    const char *base = strrchr(name, '/');
+    snprintf(shim_program_name, sizeof(shim_program_name), "%s", base != NULL ? base + 1 : name);
+}
+
+char *devname(dev_t dev, mode_t type) {
+    (void)type;
+    static _Thread_local char name[32];
+    snprintf(name, sizeof(name), "tty%d", (int)dev);
+    return name;
 }
 
 int isatty(int fd) {

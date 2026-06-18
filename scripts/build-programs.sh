@@ -1085,6 +1085,138 @@ build_whois_xcframework() {
   echo "built whois -> payload/whois.xcframework ($PLATFORMS) [official FreeBSD $WHOIS_VERSION, framework]"
 }
 
+# ---- uptime: official Apple shell_cmds w(1), compiled as uptime(1) ----
+SHELL_CMDS_VERSION="${SHELL_CMDS_VERSION:-shell_cmds-329}"
+APPLE_W_SHA256="${APPLE_W_SHA256:-b22a5e394ee05c703ccdfb0a10f8ab0e95e3f59da3794ecfcefbaf916bdaa174}"
+APPLE_W_EXTERN_SHA256="${APPLE_W_EXTERN_SHA256:-11de62e81883bed65fed675ea61a683e7043ebcb88dbfe66193f65c976baf544}"
+APPLE_W_PR_TIME_SHA256="${APPLE_W_PR_TIME_SHA256:-0afab7b2fb50785653b1ef073e73efb685082de6f4317b7feb08d898feb89c68}"
+APPLE_W_PROC_COMPARE_SHA256="${APPLE_W_PROC_COMPARE_SHA256:-cc5858de47e5d0acc9ad4e6f40d97ae8ad35ab56499124e264665cabe2723235}"
+LIBXO_VERSION="${LIBXO_VERSION:-1.7.5}"
+LIBXO_SHA256="${LIBXO_SHA256:-a4d3bd1cbbbfe7de6dad7a7e6f87757f9881753eb32d6ce6894e00e6eb28f841}"
+APPLE_LIBUTIL_VERSION="${APPLE_LIBUTIL_VERSION:-libutil-73}"
+APPLE_LIBUTIL_H_SHA256="${APPLE_LIBUTIL_H_SHA256:-edf761285ccde9059b573a3056f3d598a9a3ae6ed8814e16ae202f07b52c174c}"
+
+fetch_apple_w_sources() {
+  APPLE_W_SOURCE="$BUILD/apple-shell-cmds/w-$SHELL_CMDS_VERSION.c"
+  APPLE_W_EXTERN="$BUILD/apple-shell-cmds/extern-$SHELL_CMDS_VERSION.h"
+  APPLE_W_PR_TIME="$BUILD/apple-shell-cmds/pr_time-$SHELL_CMDS_VERSION.c"
+  APPLE_W_PROC_COMPARE="$BUILD/apple-shell-cmds/proc_compare-$SHELL_CMDS_VERSION.c"
+  LIBXO_TARBALL="$BUILD/libxo/libxo-$LIBXO_VERSION.tar.gz"
+  APPLE_LIBUTIL_H="$BUILD/apple-libutil/libutil-$APPLE_LIBUTIL_VERSION.h"
+  fetch_verified_file apple-shell-cmds "$SHELL_CMDS_VERSION-w.c" \
+    "https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/$SHELL_CMDS_VERSION/w/w.c" \
+    "$APPLE_W_SHA256" "$APPLE_W_SOURCE"
+  fetch_verified_file apple-shell-cmds "$SHELL_CMDS_VERSION-extern.h" \
+    "https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/$SHELL_CMDS_VERSION/w/extern.h" \
+    "$APPLE_W_EXTERN_SHA256" "$APPLE_W_EXTERN"
+  fetch_verified_file apple-shell-cmds "$SHELL_CMDS_VERSION-pr_time.c" \
+    "https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/$SHELL_CMDS_VERSION/w/pr_time.c" \
+    "$APPLE_W_PR_TIME_SHA256" "$APPLE_W_PR_TIME"
+  fetch_verified_file apple-shell-cmds "$SHELL_CMDS_VERSION-proc_compare.c" \
+    "https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/$SHELL_CMDS_VERSION/w/proc_compare.c" \
+    "$APPLE_W_PROC_COMPARE_SHA256" "$APPLE_W_PROC_COMPARE"
+  fetch_verified_tarball libxo "$LIBXO_VERSION" \
+    "https://github.com/Juniper/libxo/archive/refs/tags/$LIBXO_VERSION.tar.gz" \
+    "$LIBXO_SHA256" "$LIBXO_TARBALL"
+  fetch_verified_file apple-libutil "$APPLE_LIBUTIL_VERSION-libutil.h" \
+    "https://raw.githubusercontent.com/apple-oss-distributions/libutil/$APPLE_LIBUTIL_VERSION/libutil.h" \
+    "$APPLE_LIBUTIL_H_SHA256" "$APPLE_LIBUTIL_H"
+}
+
+write_libxo_config() {  # dir
+  cat > "$1/xo_config.h" <<EOF
+#ifndef XO_CONFIG_H
+#define XO_CONFIG_H
+#define LIBXO_VERSION "$LIBXO_VERSION"
+#define LIBXO_VERSION_EXTRA ""
+#define XO_ENCODERDIR ""
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_STDARG_H 1
+#define HAVE_STDINT_H 1
+#define HAVE_STDLIB_H 1
+#define HAVE_STRING_H 1
+#define HAVE_STRINGS_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_WCHAR_H 1
+#define HAVE_WCTYPE_H 1
+#define HAVE_GETOPT_H 1
+#define HAVE_ERRNO_H 1
+#define HAVE_CTYPE_H 1
+#define HAVE_LIMITS_H 1
+#define HAVE_LOCALE_H 1
+#define HAVE_LANGINFO_H 1
+#define HAVE_MEMRCHR 0
+#define HAVE_STRCHRNUL 0
+#define HAVE___FLBF 0
+#define HAVE_ETEXT 0
+#endif
+EOF
+}
+
+build_apple_uptime_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_apple_w_sources
+  curl_platform_vars "$plat"
+
+  local cc d work macsdk libxo_src libxo_inc
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  work="$BUILD/apple-shell-cmds/uptime-$plat"
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+  rm -rf "$work"; mkdir -p "$work"
+  tar xzf "$LIBXO_TARBALL" -C "$work"
+  libxo_src="$work/libxo-$LIBXO_VERSION/libxo"
+  libxo_inc="$work/libxo-$LIBXO_VERSION"
+  write_libxo_config "$libxo_src"
+  cp "$APPLE_W_SOURCE" "$work/w.c"
+  cp "$APPLE_W_EXTERN" "$work/extern.h"
+  cp "$APPLE_W_PR_TIME" "$work/pr_time.c"
+  cp "$APPLE_W_PROC_COMPARE" "$work/proc_compare.c"
+  cp "$APPLE_LIBUTIL_H" "$work/libutil.h"
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/uptime-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/uptime-libc.o"
+  "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
+    -I "$INCLUDE" -I "$work" -I "$libxo_inc" -idirafter "$macsdk/usr/include" \
+    -Dmain=entry -DHAVE_KVM=0 -include micro_os_crt.h \
+    "$work/w.c" -o "$d/uptime-main.o"
+  "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
+    -I "$INCLUDE" -I "$work" -I "$libxo_inc" -idirafter "$macsdk/usr/include" \
+    -DHAVE_KVM=0 -include micro_os_crt.h \
+    "$work/pr_time.c" -o "$d/uptime-pr-time.o"
+  "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
+    -I "$INCLUDE" -I "$work" -I "$libxo_inc" -idirafter "$macsdk/usr/include" \
+    -DHAVE_KVM=0 -include micro_os_crt.h \
+    "$work/proc_compare.c" -o "$d/uptime-proc-compare.o"
+  "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
+    -DLIBXO_TEXT_ONLY=1 -I "$INCLUDE" -I "$libxo_src" -include micro_os_crt.h \
+    "$libxo_src/libxo.c" -o "$d/uptime-libxo.o"
+  "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
+    -DLIBXO_TEXT_ONLY=1 -I "$INCLUDE" -I "$libxo_src" -include micro_os_crt.h \
+    "$libxo_src/xo_encoder.c" -o "$d/uptime-xo-encoder.o"
+  "$cc" -dynamiclib -undefined dynamic_lookup -Wl,-dead_strip $target_flags \
+    "$d/uptime-main.o" "$d/uptime-pr-time.o" "$d/uptime-proc-compare.o" \
+    "$d/uptime-libxo.o" "$d/uptime-xo-encoder.o" \
+    "$d/uptime-crt.o" "$d/uptime-libc.o" -lsbuf -o "$out"
+}
+
+build_apple_uptime_xcframework() {
+  fetch_apple_w_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/uptime.dylib"
+    echo "  building uptime slice: $plat"
+    build_apple_uptime_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/uptime.framework"
+    make_framework "$slice" "$fw" "uptime" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/uptime.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/uptime.xcframework" >/dev/null
+  echo "built uptime -> payload/uptime.xcframework ($PLATFORMS) [official Apple shell_cmds $SHELL_CMDS_VERSION w.c, framework]"
+}
+
 # ---- fastfetch: official upstream CMake project, built without source patches ----
 FASTFETCH_VERSION="${FASTFETCH_VERSION:-2.52.0}"
 FASTFETCH_SHA256="${FASTFETCH_SHA256:-6199c4cacc0b411fde7ec6c66d12829459284c6cdfb4bacce7b535190d5cd94c}"
@@ -1344,6 +1476,7 @@ build_one() {
     zip)                   build_infozip_xcframework zip build_zip_slice ;;
     unzip)                 build_infozip_xcframework unzip build_unzip_slice ;;
     whois)                 build_whois_xcframework ;;
+    uptime)                build_apple_uptime_xcframework ;;
     fastfetch)             build_fastfetch_xcframework ;;
     bind-dns-tools|dig|nslookup)
                             build_bind_dns_tools_xcframework ;;
@@ -1380,7 +1513,7 @@ done
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
 SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
-OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip whois fastfetch"
+OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip whois uptime fastfetch"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
   samples) GROUP_PROGRAMS="$SAMPLE_PROGRAMS" ;;

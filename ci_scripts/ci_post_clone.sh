@@ -54,8 +54,8 @@ xcrun xcodebuild -project micro-os.xcodeproj -resolvePackageDependencies
 echo "==> micro-os CI: building system programs (init, wm, toybox)"
 scripts/build-system.sh
 
-echo "==> micro-os CI: building optional programs (curl, ifconfig, dig, nslookup, zip, unzip, whois, fastfetch)"
-GROUP=optional scripts/build-programs.sh curl ifconfig bind-dns-tools zip unzip whois fastfetch
+echo "==> micro-os CI: building optional programs (curl, ifconfig, dig, nslookup, zip, unzip, whois, uptime, fastfetch)"
+GROUP=optional scripts/build-programs.sh curl ifconfig bind-dns-tools zip unzip whois uptime fastfetch
 
 echo "==> micro-os CI: building demo programs ($DEMOS)"
 # shellcheck disable=SC2086  # intentional word-splitting into program names

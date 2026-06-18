@@ -163,6 +163,58 @@ final class HostABI {
         }
     }
 
+    func enqueuePseudoTTYKeyboardInput(id: Int32, key: Int32, modifiers: UInt32, text: String) {
+        guard let keyboardKey = MicroOSKeyboardKey(rawValue: key) else { return }
+        let event = MicroOSKeyboardEvent(
+            key: keyboardKey,
+            modifiers: MicroOSKeyboardModifiers(rawValue: modifiers),
+            text: text
+        )
+        DispatchQueue.main.async { [weak self] in
+            self?.kernel?.enqueuePseudoTTYKeyboardInput(id: id, event: event)
+        }
+    }
+
+    func registerKeyboardSink(callback: @escaping MicroOSKeyboardSinkCallback, context: UnsafeMutableRawPointer?) -> Int32 {
+        if Thread.isMainThread {
+            return kernel?.registerKeyboardSink(callback: callback, context: context) ?? -1
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Int32 = -1
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.registerKeyboardSink(callback: callback, context: context) ?? -1
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func unregisterKeyboardSink(id: Int32) {
+        DispatchQueue.main.async { [weak self] in
+            self?.kernel?.unregisterKeyboardSink(id: id)
+        }
+    }
+
+    func dispatchKeyboardEvent(sinkID: Int32, phase: Int32, key: Int32, modifiers: UInt32, text: String) {
+        guard
+            let keyboardPhase = MicroOSKeyboardEventPhase(rawValue: phase),
+            let keyboardKey = MicroOSKeyboardKey(rawValue: key)
+        else { return }
+        let event = MicroOSKeyboardEvent(
+            key: keyboardKey,
+            modifiers: MicroOSKeyboardModifiers(rawValue: modifiers),
+            text: text
+        )
+        if Thread.isMainThread {
+            kernel?.dispatchKeyboardEvent(sinkID: sinkID, phase: keyboardPhase, event: event)
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.kernel?.dispatchKeyboardEvent(sinkID: sinkID, phase: keyboardPhase, event: event)
+        }
+    }
+
     func readPseudoTTY(id: Int32, maxBytes: Int) -> String {
         let pid = currentPID()
         if Thread.isMainThread {

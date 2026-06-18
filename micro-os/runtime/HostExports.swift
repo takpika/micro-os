@@ -102,6 +102,16 @@ public func micro_os_ptty_input(_ id: Int32, _ text: UnsafePointer<CChar>?) {
     HostABI.shared.enqueuePseudoTTYInput(id: id, text: string(from: text))
 }
 
+@_cdecl("micro_os_ptty_key_input")
+public func micro_os_ptty_key_input(
+    _ id: Int32,
+    _ key: Int32,
+    _ modifiers: UInt32,
+    _ text: UnsafePointer<CChar>?
+) {
+    HostABI.shared.enqueuePseudoTTYKeyboardInput(id: id, key: key, modifiers: modifiers, text: string(from: text))
+}
+
 @_cdecl("micro_os_ptty_read")
 public func micro_os_ptty_read(_ id: Int32, _ buffer: UnsafeMutablePointer<CChar>?, _ maxBytes: Int32) -> Int32 {
     guard let buffer, maxBytes > 0 else { return 0 }
@@ -114,6 +124,37 @@ public func micro_os_ptty_read(_ id: Int32, _ buffer: UnsafeMutablePointer<CChar
         buffer[bytes.count] = 0
     }
     return Int32(bytes.count)
+}
+
+@_cdecl("micro_os_keyboard_sink_register")
+public func micro_os_keyboard_sink_register(
+    _ callback: MicroOSKeyboardSinkCallback?,
+    _ context: UnsafeMutableRawPointer?
+) -> Int32 {
+    guard let callback else { return -1 }
+    return HostABI.shared.registerKeyboardSink(callback: callback, context: context)
+}
+
+@_cdecl("micro_os_keyboard_sink_unregister")
+public func micro_os_keyboard_sink_unregister(_ sinkID: Int32) {
+    HostABI.shared.unregisterKeyboardSink(id: sinkID)
+}
+
+@_cdecl("micro_os_keyboard_dispatch")
+public func micro_os_keyboard_dispatch(
+    _ sinkID: Int32,
+    _ phase: Int32,
+    _ key: Int32,
+    _ modifiers: UInt32,
+    _ text: UnsafePointer<CChar>?
+) {
+    HostABI.shared.dispatchKeyboardEvent(
+        sinkID: sinkID,
+        phase: phase,
+        key: key,
+        modifiers: modifiers,
+        text: string(from: text)
+    )
 }
 
 @_cdecl("micro_os_ptty_observe_output")

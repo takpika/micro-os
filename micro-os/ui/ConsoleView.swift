@@ -5,7 +5,7 @@ import UIKit
 
 struct ConsoleView: View {
     let lines: [ConsoleLine]
-    let onInput: (String) -> Void
+    let onInput: (MicroOSKeyboardEvent) -> Void
     @State private var pendingInput = ""
     @State private var isClearingPendingInput = false
     @State private var refocusTick = 0
@@ -46,8 +46,8 @@ struct ConsoleView: View {
     @ViewBuilder
     private var keyboardInput: some View {
         #if os(iOS) || os(tvOS) || os(visionOS)
-        ConsoleKeyboardInputView(refocusTick: refocusTick) { text in
-            onInput(text)
+        ConsoleKeyboardInputView(refocusTick: refocusTick) { event in
+            onInput(event)
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
@@ -64,13 +64,13 @@ struct ConsoleView: View {
                 }
                 if newValue.hasPrefix(oldValue) {
                     let start = newValue.index(newValue.startIndex, offsetBy: oldValue.count)
-                    onInput(String(newValue[start...]))
+                    onInput(MicroOSKeyboardEvent(key: .text, text: String(newValue[start...])))
                 } else if oldValue.hasPrefix(newValue) {
-                    onInput("\u{7f}")
+                    onInput(MicroOSKeyboardEvent(key: .delete))
                 }
             }
             .onSubmit {
-                onInput("\n")
+                onInput(MicroOSKeyboardEvent(key: .text, text: "\n"))
                 isClearingPendingInput = true
                 pendingInput.removeAll()
             }
@@ -81,7 +81,7 @@ struct ConsoleView: View {
 #if os(iOS) || os(tvOS) || os(visionOS)
 private struct ConsoleKeyboardInputView: UIViewRepresentable {
     var refocusTick: Int
-    let onInput: (String) -> Void
+    let onInput: (MicroOSKeyboardEvent) -> Void
 
     func makeUIView(context: Context) -> ConsoleInputView {
         let view = ConsoleInputView()
@@ -118,17 +118,17 @@ private struct ConsoleKeyboardInputView: UIViewRepresentable {
     }
 
     final class Coordinator {
-        var onInput: (String) -> Void
+        var onInput: (MicroOSKeyboardEvent) -> Void
         var lastRefocusTick = 0
 
-        init(onInput: @escaping (String) -> Void) {
+        init(onInput: @escaping (MicroOSKeyboardEvent) -> Void) {
             self.onInput = onInput
         }
     }
 }
 
 private final class ConsoleInputView: UIView, UIKeyInput {
-    var onInput: ((String) -> Void)?
+    var onInput: ((MicroOSKeyboardEvent) -> Void)?
     var keyboardType: UIKeyboardType = .asciiCapable
     var returnKeyType: UIReturnKeyType = .default
     var autocapitalizationType: UITextAutocapitalizationType = .none
@@ -137,9 +137,16 @@ private final class ConsoleInputView: UIView, UIKeyInput {
     var smartQuotesType: UITextSmartQuotesType = .no
     var smartDashesType: UITextSmartDashesType = .no
     var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+    private lazy var keyboardAccessoryBar = MicroOSKeyboardAccessoryBar { [weak self] event in
+        self?.onInput?(event)
+    }
 
     var hasText: Bool {
         true
+    }
+
+    override var inputAccessoryView: UIView? {
+        keyboardAccessoryBar
     }
 
     override var canBecomeFirstResponder: Bool {
@@ -159,12 +166,24 @@ private final class ConsoleInputView: UIView, UIKeyInput {
         super.touchesBegan(touches, with: event)
     }
 
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            guard let key = press.key else { continue }
+            onInput?(MicroOSKeyboardUIKitMapper.event(for: key))
+            handled = true
+        }
+        if !handled {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+
     func insertText(_ text: String) {
-        onInput?(text)
+        keyboardAccessoryBar.insertText(text)
     }
 
     func deleteBackward() {
-        onInput?("\u{7f}")
+        keyboardAccessoryBar.sendSystemKey(.delete)
     }
 }
 #endif

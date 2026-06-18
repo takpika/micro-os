@@ -64,6 +64,9 @@ private func micro_os_ptty_write(_ id: Int32, _ text: UnsafePointer<CChar>?)
 @_silgen_name("micro_os_ptty_input")
 private func micro_os_ptty_input(_ id: Int32, _ text: UnsafePointer<CChar>?)
 
+@_silgen_name("micro_os_ptty_key_input")
+private func micro_os_ptty_key_input(_ id: Int32, _ key: Int32, _ modifiers: UInt32, _ text: UnsafePointer<CChar>?)
+
 @_silgen_name("micro_os_ptty_read")
 private func micro_os_ptty_read(_ id: Int32, _ buffer: UnsafeMutablePointer<CChar>?, _ maxBytes: Int32) -> Int32
 
@@ -185,6 +188,10 @@ public enum MicroOS {
 
     public static func inputPseudoTTY(_ id: Int32, _ text: String) {
         text.withCString { micro_os_ptty_input(id, $0) }
+    }
+
+    public static func inputPseudoTTYKey(_ id: Int32, key: Int32, modifiers: UInt32, text: String = "") {
+        text.withCString { micro_os_ptty_key_input(id, key, modifiers, $0) }
     }
 
     public static func readPseudoTTY(_ id: Int32, maxBytes: Int = 4096) -> String {

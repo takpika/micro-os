@@ -968,7 +968,7 @@ build_one() {
     file-fallback-program) build_xcf file-fallback-program build_c_crt "$ROOT/samples/file-fallback-program.c" ;;
     stdin-program)         build_xcf stdin-program build_c_crt "$ROOT/samples/stdin-program.c" ;;
     SwiftOverlayProgram)   build_xcf SwiftOverlayProgram build_swift "$ROOT/samples/SwiftOverlayProgram.swift" "$INCLUDE/MicroOS.swift" ;;
-    TerminalProgram)       build_xcf TerminalProgram build_swift "$ROOT/samples/TerminalProgram.swift" "$INCLUDE/MicroOS.swift" ;;
+    TerminalProgram)       build_xcf TerminalProgram build_swift "$ROOT/samples/TerminalProgram.swift" "$ROOT/micro-os/kernel/KeyboardEvent.swift" "$ROOT/micro-os/ui/MicroOSKeyboardAccessoryBar.swift" "$INCLUDE/MicroOS.swift" ;;
     vcocoa-todo)           build_xcf vcocoa-todo build_vcocoa "$ROOT/samples/vcocoa-todo.m" ;;
     vwin32-todo)           build_xcf vwin32-todo build_vwin32 "$ROOT/samples/vwin32-todo.c" ;;
     *)

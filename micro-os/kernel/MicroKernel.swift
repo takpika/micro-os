@@ -12,15 +12,21 @@ final class MicroKernel: ObservableObject {
     private var nextTTYID: Int32 = 0
     private var processes: [Int32: ProcessControlBlock] = [:]
     private var pttys: [Int32: PseudoTTY] = [:]
+    private var nextKeyboardSinkID: Int32 = 0
+    private var keyboardSinks: [Int32: MicroOSKeyboardSink] = [:]
     private var initialProcessPID: Int32?
     private let ansiParser = ANSIConsoleParser()
-    private let defaultTTY = PseudoTTY(id: 0, name: "console0")
+    private let defaultTTY: PseudoTTY
     private let homeDirectory: String
     private var externalTTYBridges: [Int32: ExternalTTYBridge] = [:]
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        homeDirectory = support?.appendingPathComponent("micro-os-home", isDirectory: true).path ?? NSTemporaryDirectory()
+        let home = support?.appendingPathComponent("micro-os-home", isDirectory: true).path ?? NSTemporaryDirectory()
+        homeDirectory = home
+        defaultTTY = PseudoTTY(id: 0, name: "console0") { prefix in
+            MicroKernel.completionCandidates(prefix: prefix, homeDirectory: home)
+        }
         try? FileManager.default.createDirectory(atPath: homeDirectory, withIntermediateDirectories: true)
         externalTTYBridges[defaultTTY.id] = ExternalTTYBridge(ttyID: defaultTTY.id)
         pttys[defaultTTY.id] = defaultTTY
@@ -145,9 +151,17 @@ final class MicroKernel: ObservableObject {
         }
     }
 
+    func enqueueKeyboardInput(_ event: MicroOSKeyboardEvent) {
+        guard let text = MicroOSKeyboardTTYTranslator.text(for: event) else { return }
+        enqueueStdin(text)
+    }
+
     func createPseudoTTY(name: String) -> Int32 {
         nextTTYID += 1
-        let tty = PseudoTTY(id: nextTTYID, name: name.isEmpty ? "ptty\(nextTTYID)" : name)
+        let home = homeDirectory
+        let tty = PseudoTTY(id: nextTTYID, name: name.isEmpty ? "ptty\(nextTTYID)" : name) { prefix in
+            MicroKernel.completionCandidates(prefix: prefix, homeDirectory: home)
+        }
         pttys[tty.id] = tty
         let bridge = ExternalTTYBridge(ttyID: tty.id)
         externalTTYBridges[tty.id] = bridge
@@ -168,6 +182,34 @@ final class MicroKernel: ObservableObject {
         let echo = tty.enqueueInput(text)
         if tty.shouldEchoInput(), !echo.isEmpty {
             tty.write(echo)
+        }
+    }
+
+    func enqueuePseudoTTYKeyboardInput(id: Int32, event: MicroOSKeyboardEvent) {
+        guard let text = MicroOSKeyboardTTYTranslator.text(for: event) else { return }
+        enqueuePseudoTTYInput(id: id, text: text)
+    }
+
+    func registerKeyboardSink(callback: @escaping MicroOSKeyboardSinkCallback, context: UnsafeMutableRawPointer?) -> Int32 {
+        nextKeyboardSinkID += 1
+        keyboardSinks[nextKeyboardSinkID] = MicroOSKeyboardSink(callback: callback, context: context)
+        return nextKeyboardSinkID
+    }
+
+    func unregisterKeyboardSink(id: Int32) {
+        keyboardSinks.removeValue(forKey: id)
+    }
+
+    func dispatchKeyboardEvent(sinkID: Int32, phase: MicroOSKeyboardEventPhase, event: MicroOSKeyboardEvent) {
+        guard let sink = keyboardSinks[sinkID] else { return }
+        event.text.withCString { pointer in
+            sink.callback(
+                phase.rawValue,
+                event.key.rawValue,
+                event.modifiers.rawValue,
+                pointer,
+                sink.context
+            )
         }
     }
 
@@ -280,6 +322,54 @@ final class MicroKernel: ObservableObject {
     private func allocatePID() -> Int32 {
         nextPID += 1
         return nextPID
+    }
+
+    private static func completionCandidates(prefix: String, homeDirectory: String) -> [String] {
+        if prefix.contains("/") || prefix.hasPrefix(".") || prefix.hasPrefix("~") {
+            return pathCompletionCandidates(prefix: prefix, homeDirectory: homeDirectory)
+        }
+
+        let bin = (homeDirectory as NSString).appendingPathComponent(".local/bin")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: bin)) ?? []
+        return names
+            .filter { $0.hasPrefix(prefix) }
+            .sorted()
+            .map { $0 + " " }
+    }
+
+    private static func pathCompletionCandidates(prefix: String, homeDirectory: String) -> [String] {
+        let expandedPrefix: String
+        if prefix == "~" {
+            expandedPrefix = homeDirectory
+        } else if prefix.hasPrefix("~/") {
+            expandedPrefix = homeDirectory + String(prefix.dropFirst())
+        } else if prefix.hasPrefix("/") {
+            expandedPrefix = prefix
+        } else {
+            expandedPrefix = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(prefix)
+                .path
+        }
+
+        let directoryPath = (expandedPrefix as NSString).deletingLastPathComponent
+        let basename = (expandedPrefix as NSString).lastPathComponent
+        let displayDirectory = (prefix as NSString).deletingLastPathComponent
+        let displayPrefix = displayDirectory == "." ? "" : displayDirectory + "/"
+
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directoryPath) else {
+            return []
+        }
+
+        return names
+            .filter { !$0.hasPrefix(".") || basename.hasPrefix(".") }
+            .filter { $0.hasPrefix(basename) }
+            .sorted()
+            .map { name in
+                let fullPath = (directoryPath as NSString).appendingPathComponent(name)
+                var isDirectory: ObjCBool = false
+                FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirectory)
+                return displayPrefix + name + (isDirectory.boolValue ? "/" : " ")
+            }
     }
 
     private func append(_ stream: TTYStream, _ text: String) {

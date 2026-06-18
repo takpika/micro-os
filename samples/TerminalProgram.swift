@@ -300,8 +300,13 @@ final class TerminalModel: ObservableObject {
         MicroOS.writePseudoTTY(ttyID, text)
     }
 
-    func input(_ text: String) {
-        MicroOS.inputPseudoTTY(ttyID, text)
+    func input(_ event: MicroOSKeyboardEvent) {
+        MicroOS.inputPseudoTTYKey(
+            ttyID,
+            key: event.key.rawValue,
+            modifiers: event.modifiers.rawValue,
+            text: event.text
+        )
     }
 
     func append(_ text: String) {
@@ -343,18 +348,18 @@ struct TerminalRootView: View {
                     }
                     .background(Color.black)
 
-                    TerminalKeyboardInputView { text in
-                        model.input(text)
+                    TerminalKeyboardInputView { event in
+                        model.input(event)
                     }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .contentShape(Rectangle())
-                .onChange(of: model.lines.count) { _, _ in
+                .onChange(of: model.lines.count) { _ in
                     if let last = model.lines.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
-                .onChange(of: model.revision) { _, _ in
+                .onChange(of: model.revision) { _ in
                     if let last = model.lines.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
@@ -366,7 +371,7 @@ struct TerminalRootView: View {
 }
 
 private struct TerminalKeyboardInputView: UIViewRepresentable {
-    let onInput: (String) -> Void
+    let onInput: (MicroOSKeyboardEvent) -> Void
 
     func makeUIView(context: Context) -> TerminalInputView {
         let view = TerminalInputView()
@@ -402,16 +407,16 @@ private struct TerminalKeyboardInputView: UIViewRepresentable {
     }
 
     final class Coordinator {
-        var onInput: (String) -> Void
+        var onInput: (MicroOSKeyboardEvent) -> Void
 
-        init(onInput: @escaping (String) -> Void) {
+        init(onInput: @escaping (MicroOSKeyboardEvent) -> Void) {
             self.onInput = onInput
         }
     }
 }
 
 private final class TerminalInputView: UIView, UIKeyInput {
-    var onInput: ((String) -> Void)?
+    var onInput: ((MicroOSKeyboardEvent) -> Void)?
     var keyboardType: UIKeyboardType = .asciiCapable
     var returnKeyType: UIReturnKeyType = .default
     var autocapitalizationType: UITextAutocapitalizationType = .none
@@ -420,9 +425,16 @@ private final class TerminalInputView: UIView, UIKeyInput {
     var smartQuotesType: UITextSmartQuotesType = .no
     var smartDashesType: UITextSmartDashesType = .no
     var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+    private lazy var accessoryBar = MicroOSKeyboardAccessoryBar { [weak self] event in
+        self?.onInput?(event)
+    }
 
     var hasText: Bool {
         false
+    }
+
+    override var inputAccessoryView: UIView? {
+        accessoryBar
     }
 
     override var canBecomeFirstResponder: Bool {
@@ -446,12 +458,24 @@ private final class TerminalInputView: UIView, UIKeyInput {
         super.touchesBegan(touches, with: event)
     }
 
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            guard let key = press.key else { continue }
+            onInput?(MicroOSKeyboardUIKitMapper.event(for: key))
+            handled = true
+        }
+        if !handled {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+
     func insertText(_ text: String) {
-        onInput?(text)
+        accessoryBar.insertText(text)
     }
 
     func deleteBackward() {
-        onInput?("\u{7f}")
+        accessoryBar.sendSystemKey(.delete)
     }
 }
 

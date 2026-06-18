@@ -35,6 +35,32 @@ extern void micro_os_vcocoa_set_fullscreen(int32_t windowID, int32_t on);
 
 static void MicroOSAppKitEmitView(micro_os_gui_window_t window, NSView *view);
 
+enum {
+    MicroOSKeyboardPhaseKeyDown = 0,
+    MicroOSKeyboardPhaseKeyUp = 1,
+    MicroOSKeyboardPhaseKeyRepeat = 2,
+    MicroOSKeyboardPhaseModifiersChanged = 3,
+};
+
+enum {
+    MicroOSKeyboardKeyText = 0,
+    MicroOSKeyboardKeyTab = 1,
+    MicroOSKeyboardKeyEscape = 2,
+    MicroOSKeyboardKeyLeftArrow = 3,
+    MicroOSKeyboardKeyDownArrow = 4,
+    MicroOSKeyboardKeyUpArrow = 5,
+    MicroOSKeyboardKeyRightArrow = 6,
+    MicroOSKeyboardKeyDelete = 7,
+    MicroOSKeyboardKeyReturn = 8,
+    MicroOSKeyboardKeySpace = 9,
+};
+
+enum {
+    MicroOSKeyboardModifierControl = 1 << 0,
+    MicroOSKeyboardModifierOption = 1 << 1,
+    MicroOSKeyboardModifierCommand = 1 << 2,
+};
+
 static NSMutableDictionary<NSString *, NSButton *> *MicroOSAppKitButtonsByID(void) {
     static NSMutableDictionary<NSString *, NSButton *> *buttons;
     static dispatch_once_t onceToken;
@@ -50,7 +76,9 @@ static NSMutableDictionary<NSString *, NSButton *> *MicroOSAppKitButtonsByID(voi
 @interface NSEvent ()
 + (NSEvent *)microOSMouseEventAt:(CGPoint)loc;
 + (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods;
++ (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods characters:(NSString *)chars;
 + (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods isARepeat:(BOOL)repeat;
++ (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods characters:(NSString *)chars isARepeat:(BOOL)repeat;
 + (NSEvent *)microOSFlagsEventWithModifiers:(NSEventModifierFlags)mods;
 @end
 
@@ -58,22 +86,31 @@ static NSMutableDictionary<NSString *, NSButton *> *MicroOSAppKitButtonsByID(voi
     CGPoint _loc;
     unsigned short _key;
     NSEventModifierFlags _mods;
+    NSString *_chars;
     CGFloat _dy;
     BOOL _repeat;
 }
 - (CGPoint)locationInWindow { return _loc; }
 - (unsigned short)keyCode { return _key; }
 - (NSEventModifierFlags)modifierFlags { return _mods; }
+- (NSString *)characters { return _chars ?: @""; }
+- (NSString *)charactersIgnoringModifiers { return _chars ?: @""; }
 - (CGFloat)deltaY { return _dy; }
 - (BOOL)isARepeat { return _repeat; }
 + (NSEvent *)microOSMouseEventAt:(CGPoint)loc {
     NSEvent *e = [NSEvent new]; e->_loc = loc; return e;
 }
 + (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods {
-    return [self microOSKeyEventWithCode:code modifiers:mods isARepeat:NO];
+    return [self microOSKeyEventWithCode:code modifiers:mods characters:@"" isARepeat:NO];
+}
++ (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods characters:(NSString *)chars {
+    return [self microOSKeyEventWithCode:code modifiers:mods characters:chars isARepeat:NO];
 }
 + (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods isARepeat:(BOOL)repeat {
-    NSEvent *e = [NSEvent new]; e->_key = code; e->_mods = mods; e->_repeat = repeat; return e;
+    return [self microOSKeyEventWithCode:code modifiers:mods characters:@"" isARepeat:repeat];
+}
++ (NSEvent *)microOSKeyEventWithCode:(unsigned short)code modifiers:(NSEventModifierFlags)mods characters:(NSString *)chars isARepeat:(BOOL)repeat {
+    NSEvent *e = [NSEvent new]; e->_key = code; e->_mods = mods; e->_chars = [chars copy]; e->_repeat = repeat; return e;
 }
 + (NSEvent *)microOSFlagsEventWithModifiers:(NSEventModifierFlags)mods {
     NSEvent *e = [NSEvent new]; e->_mods = mods; return e;
@@ -320,27 +357,68 @@ static UIViewController *microOSTopViewController(void) {
 @property(nonatomic) CGSize logical;
 @property(nonatomic) NSEventModifierFlags keyMods;   // tracked for flagsChanged:
 @property(nonatomic) BOOL softKeyboardOn;            // wm keyboard button toggles this
-@property(nonatomic, strong) NSMutableDictionary *keyRepeatTimers;  // @(keyCode) -> repeat source
+@property(nonatomic) int32_t keyboardSinkID;
+@property(nonatomic, strong) NSMutableDictionary *keyRepeatTimers;  // @(MicroOSKeyboardKey*) -> repeat source
+@property(nonatomic, strong) UIView *softKeyboardAccessory;
+@property(nonatomic, weak) UIButton *softControlButton;
+@property(nonatomic, weak) UIButton *softOptionButton;
+@property(nonatomic, weak) UIButton *softCommandButton;
 @end
 
-// macOS virtual keyCodes the engine's -keyDown: switches on, keyed by the iOS
-// hardware-key HID usage. Only the keys this kind of app uses are mapped; an
-// unmapped key still delivers a -keyDown: with code 0 (harmless).
-static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
+static uint32_t microOSKeyboardModifiersFromNSEvent(NSEventModifierFlags mods) {
+    uint32_t result = 0;
+    if (mods & NSEventModifierFlagControl) result |= MicroOSKeyboardModifierControl;
+    if (mods & NSEventModifierFlagOption) result |= MicroOSKeyboardModifierOption;
+    if (mods & NSEventModifierFlagCommand) result |= MicroOSKeyboardModifierCommand;
+    return result;
+}
+
+static NSEventModifierFlags microOSNSEventModifiersFromKeyboard(uint32_t mods) {
+    NSEventModifierFlags result = 0;
+    if (mods & MicroOSKeyboardModifierControl) result |= NSEventModifierFlagControl;
+    if (mods & MicroOSKeyboardModifierOption) result |= NSEventModifierFlagOption;
+    if (mods & MicroOSKeyboardModifierCommand) result |= NSEventModifierFlagCommand;
+    return result;
+}
+
+static int32_t microOSKeyboardKeyForHID(UIKeyboardHIDUsage hid) {
     switch (hid) {
-        case UIKeyboardHIDUsageKeyboardReturnOrEnter: return 36;
-        case UIKeyboardHIDUsageKeypadEnter:           return 76;
-        case UIKeyboardHIDUsageKeyboardSpacebar:      return 49;
-        case UIKeyboardHIDUsageKeyboardEscape:        return 53;
-        case UIKeyboardHIDUsageKeyboardUpArrow:       return 126;
-        case UIKeyboardHIDUsageKeyboardDownArrow:     return 125;
-        case UIKeyboardHIDUsageKeyboardLeftArrow:     return 123;
-        case UIKeyboardHIDUsageKeyboardRightArrow:    return 124;
-        case UIKeyboardHIDUsageKeyboardF5:            return 96;
-        case UIKeyboardHIDUsageKeyboardF9:            return 101;
-        default:                                      return 0;
+        case UIKeyboardHIDUsageKeyboardReturnOrEnter:
+        case UIKeyboardHIDUsageKeypadEnter:
+            return MicroOSKeyboardKeyReturn;
+        case UIKeyboardHIDUsageKeyboardSpacebar:
+            return MicroOSKeyboardKeySpace;
+        case UIKeyboardHIDUsageKeyboardEscape:
+            return MicroOSKeyboardKeyEscape;
+        case UIKeyboardHIDUsageKeyboardUpArrow:
+            return MicroOSKeyboardKeyUpArrow;
+        case UIKeyboardHIDUsageKeyboardDownArrow:
+            return MicroOSKeyboardKeyDownArrow;
+        case UIKeyboardHIDUsageKeyboardLeftArrow:
+            return MicroOSKeyboardKeyLeftArrow;
+        case UIKeyboardHIDUsageKeyboardRightArrow:
+            return MicroOSKeyboardKeyRightArrow;
+        default:
+            return MicroOSKeyboardKeyText;
     }
 }
+
+static unsigned short microOSMacKeyCodeForKeyboardKey(int32_t key) {
+    switch (key) {
+        case MicroOSKeyboardKeyReturn:     return 36;
+        case MicroOSKeyboardKeySpace:      return 49;
+        case MicroOSKeyboardKeyEscape:     return 53;
+        case MicroOSKeyboardKeyUpArrow:    return 126;
+        case MicroOSKeyboardKeyDownArrow:  return 125;
+        case MicroOSKeyboardKeyLeftArrow:  return 123;
+        case MicroOSKeyboardKeyRightArrow: return 124;
+        case MicroOSKeyboardKeyDelete:     return 51;
+        case MicroOSKeyboardKeyTab:        return 48;
+        default:                           return 0;
+    }
+}
+
+static void microOSBackingKeyboardSinkCallback(int32_t phase, int32_t key, uint32_t modifiers, const char *text, void *context);
 
 @implementation MicroOSBackingView
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -352,8 +430,12 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
         UIHoverGestureRecognizer *hover =
             [[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(microOSHover:)];
         [self addGestureRecognizer:hover];
+        _keyboardSinkID = micro_os_keyboard_sink_register(microOSBackingKeyboardSinkCallback, (__bridge void *)self);
     }
     return self;
+}
+- (void)dealloc {
+    if (_keyboardSinkID >= 0) micro_os_keyboard_sink_unregister(_keyboardSinkID);
 }
 - (void)microOSHover:(UIHoverGestureRecognizer *)g {
     switch (g.state) {
@@ -439,23 +521,57 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
 // the owning NSView's -keyDown:/-keyUp:/-flagsChanged:, like a real Mac app.
 - (BOOL)canBecomeFirstResponder { return YES; }
 
-// Ctrl held -> -flagsChanged: (the engine's skip/advance). UIKey.modifierFlags and
-// NSEventModifierFlags share bit positions for shift/control/option/command.
-- (void)microOSSyncModifiers:(NSEventModifierFlags)mods {
+// Ctrl held -> -flagsChanged: (the engine's skip/advance). Hardware and soft
+// keys both pass through the kernel keyboard sink before they become NSEvents.
+- (void)microOSApplyModifiers:(NSEventModifierFlags)mods {
     if (mods == self.keyMods) return;
     self.keyMods = mods;
     [self.owner flagsChanged:[NSEvent microOSFlagsEventWithModifiers:mods]];
+    [self microOSUpdateSoftKeyboardModifierButtons];
+}
+- (void)microOSDispatchModifiers:(NSEventModifierFlags)mods {
+    micro_os_keyboard_dispatch(
+        self.keyboardSinkID,
+        MicroOSKeyboardPhaseModifiersChanged,
+        MicroOSKeyboardKeyText,
+        microOSKeyboardModifiersFromNSEvent(mods),
+        ""
+    );
+}
+- (void)microOSDispatchKey:(int32_t)key phase:(int32_t)phase text:(NSString *)text {
+    micro_os_keyboard_dispatch(
+        self.keyboardSinkID,
+        phase,
+        key,
+        microOSKeyboardModifiersFromNSEvent(self.keyMods),
+        text.UTF8String ?: ""
+    );
+}
+- (void)microOSReceiveKernelKeyboardPhase:(int32_t)phase key:(int32_t)key modifiers:(uint32_t)modifiers text:(NSString *)text {
+    NSEventModifierFlags mods = microOSNSEventModifiersFromKeyboard(modifiers);
+    if (phase == MicroOSKeyboardPhaseModifiersChanged) {
+        [self microOSApplyModifiers:mods];
+        return;
+    }
+
+    unsigned short code = microOSMacKeyCodeForKeyboardKey(key);
+    if (phase == MicroOSKeyboardPhaseKeyUp) {
+        [self.owner keyUp:[NSEvent microOSKeyEventWithCode:code modifiers:mods characters:text ?: @""]];
+    } else {
+        BOOL repeat = phase == MicroOSKeyboardPhaseKeyRepeat;
+        [self.owner keyDown:[NSEvent microOSKeyEventWithCode:code modifiers:mods characters:text ?: @"" isARepeat:repeat]];
+    }
 }
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     BOOL handled = NO;
     for (UIPress *press in presses) {
         UIKey *key = press.key; if (!key) continue;
-        [self microOSSyncModifiers:(NSEventModifierFlags)key.modifierFlags];
-        unsigned short code = microOSMacKeyCodeForHID(key.keyCode);
-        [self.owner keyDown:[NSEvent microOSKeyEventWithCode:code modifiers:self.keyMods]];
+        [self microOSDispatchModifiers:(NSEventModifierFlags)key.modifierFlags];
+        int32_t keyboardKey = microOSKeyboardKeyForHID(key.keyCode);
+        [self microOSDispatchKey:keyboardKey phase:MicroOSKeyboardPhaseKeyDown text:key.charactersIgnoringModifiers ?: @""];
         // iOS delivers a single press; macOS auto-repeats a held key. Start a timer
         // so a held key keeps sending -keyDown: like macOS would (modifiers excluded).
-        if (code != 0) [self microOSStartRepeat:code];
+        if (keyboardKey != MicroOSKeyboardKeyText) [self microOSStartRepeat:keyboardKey];
         handled = YES;
     }
     if (!handled) [super pressesBegan:presses withEvent:event];
@@ -464,10 +580,10 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
     BOOL handled = NO;
     for (UIPress *press in presses) {
         UIKey *key = press.key; if (!key) continue;
-        [self microOSSyncModifiers:(NSEventModifierFlags)key.modifierFlags];
-        unsigned short code = microOSMacKeyCodeForHID(key.keyCode);
-        [self microOSStopRepeat:code];
-        [self.owner keyUp:[NSEvent microOSKeyEventWithCode:code modifiers:self.keyMods]];
+        [self microOSDispatchModifiers:(NSEventModifierFlags)key.modifierFlags];
+        int32_t keyboardKey = microOSKeyboardKeyForHID(key.keyCode);
+        [self microOSStopRepeat:keyboardKey];
+        [self microOSDispatchKey:keyboardKey phase:MicroOSKeyboardPhaseKeyUp text:key.charactersIgnoringModifiers ?: @""];
         handled = YES;
     }
     if (!handled) [super pressesEnded:presses withEvent:event];
@@ -483,9 +599,9 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
 // macOS-style auto-repeat: after an initial delay, re-send -keyDown: at a fixed
 // rate until the key is released. Timers run on the main queue (where presses and
 // the keyDown forwarding already happen).
-- (void)microOSStartRepeat:(unsigned short)code {
+- (void)microOSStartRepeat:(int32_t)key {
     if (!self.keyRepeatTimers) self.keyRepeatTimers = [NSMutableDictionary dictionary];
-    [self microOSStopRepeat:code];
+    [self microOSStopRepeat:key];
     dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(t,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)),   // delay until repeat
@@ -494,14 +610,14 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
     __weak MicroOSBackingView *weakSelf = self;
     dispatch_source_set_event_handler(t, ^{
         MicroOSBackingView *s = weakSelf; if (!s) return;
-        [s.owner keyDown:[NSEvent microOSKeyEventWithCode:code modifiers:s.keyMods isARepeat:YES]];
+        [s microOSDispatchKey:key phase:MicroOSKeyboardPhaseKeyRepeat text:@""];
     });
     dispatch_resume(t);
-    self.keyRepeatTimers[@(code)] = t;
+    self.keyRepeatTimers[@(key)] = t;
 }
-- (void)microOSStopRepeat:(unsigned short)code {
-    dispatch_source_t t = self.keyRepeatTimers[@(code)];
-    if (t) { dispatch_source_cancel(t); [self.keyRepeatTimers removeObjectForKey:@(code)]; }
+- (void)microOSStopRepeat:(int32_t)key {
+    dispatch_source_t t = self.keyRepeatTimers[@(key)];
+    if (t) { dispatch_source_cancel(t); [self.keyRepeatTimers removeObjectForKey:@(key)]; }
 }
 - (void)microOSStopAllRepeats {
     for (id key in [self.keyRepeatTimers allKeys]) {
@@ -515,15 +631,13 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
 // (advance); other characters still send a -keyDown: (code 0) and are ignored.
 - (BOOL)hasText { return NO; }
 - (void)insertText:(NSString *)text {
-    unsigned short code = 0;
-    if ([text isEqualToString:@" "]) code = 49;             // space -> advance
-    else if ([text isEqualToString:@"\n"] || [text isEqualToString:@"\r"]) code = 36;  // return
-    [self.owner keyDown:[NSEvent microOSKeyEventWithCode:code modifiers:0]];
-    [self.owner keyUp:[NSEvent microOSKeyEventWithCode:code modifiers:0]];
+    int32_t key = MicroOSKeyboardKeyText;
+    if ([text isEqualToString:@" "]) key = MicroOSKeyboardKeySpace;
+    else if ([text isEqualToString:@"\n"] || [text isEqualToString:@"\r"]) key = MicroOSKeyboardKeyReturn;
+    [self microOSSendSoftKey:key text:text ?: @""];
 }
 - (void)deleteBackward {
-    [self.owner keyDown:[NSEvent microOSKeyEventWithCode:51 modifiers:0]];   // delete
-    [self.owner keyUp:[NSEvent microOSKeyEventWithCode:51 modifiers:0]];
+    [self microOSSendSoftKey:MicroOSKeyboardKeyDelete text:@""];
 }
 - (UIKeyboardType)keyboardType { return UIKeyboardTypeDefault; }
 - (UITextAutocorrectionType)autocorrectionType { return UITextAutocorrectionTypeNo; }
@@ -538,12 +652,150 @@ static unsigned short microOSMacKeyCodeForHID(UIKeyboardHIDUsage hid) {
     if (!empty) empty = [[UIView alloc] initWithFrame:CGRectZero];
     return empty;                                        // no soft keyboard
 }
+- (UIView *)inputAccessoryView {
+    if (!self.softKeyboardOn) return nil;
+    return [self microOSSoftKeyboardAccessory];
+}
 - (void)microOSToggleSoftKeyboard {
     self.softKeyboardOn = !self.softKeyboardOn;
+    if (!self.softKeyboardOn) [self microOSClearSoftKeyboardModifiers];
     if ([self isFirstResponder]) [self reloadInputViews];
     else [self becomeFirstResponder];
 }
+- (void)microOSSendSoftKey:(int32_t)key text:(NSString *)text {
+    [self microOSDispatchKey:key phase:MicroOSKeyboardPhaseKeyDown text:text];
+    [self microOSDispatchKey:key phase:MicroOSKeyboardPhaseKeyUp text:text];
+    [self microOSClearSoftKeyboardModifiers];
+}
+- (UIView *)microOSSoftKeyboardAccessory {
+    if (self.softKeyboardAccessory) return self.softKeyboardAccessory;
+
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
+    blur.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 58)];
+    container.backgroundColor = UIColor.clearColor;
+    [container addSubview:blur];
+    [container.heightAnchor constraintEqualToConstant:58].active = YES;
+
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.showsHorizontalScrollIndicator = NO;
+    scroll.alwaysBounceHorizontal = YES;
+    [blur.contentView addSubview:scroll];
+
+    UIStackView *stack = [UIStackView new];
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 8;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [scroll addSubview:stack];
+
+    NSArray<NSArray<id> *> *keys = @[
+        @[@"mod", @"Ctrl", @"control", @(MicroOSKeyboardModifierControl)],
+        @[@"mod", @"Option", @"option", @(MicroOSKeyboardModifierOption)],
+        @[@"mod", @"Command", @"command", @(MicroOSKeyboardModifierCommand)],
+        @[@"key", @"Tab", @"arrow.right.to.line", @(MicroOSKeyboardKeyTab)],
+        @[@"key", @"Esc", @"escape", @(MicroOSKeyboardKeyEscape)],
+        @[@"key", @"Left", @"arrow.left", @(MicroOSKeyboardKeyLeftArrow)],
+        @[@"key", @"Down", @"arrow.down", @(MicroOSKeyboardKeyDownArrow)],
+        @[@"key", @"Up", @"arrow.up", @(MicroOSKeyboardKeyUpArrow)],
+        @[@"key", @"Right", @"arrow.right", @(MicroOSKeyboardKeyRightArrow)],
+    ];
+
+    for (NSArray<id> *key in keys) {
+        UIButton *button = [self microOSSoftKeyboardButtonWithTitle:key[1] symbol:key[2]];
+        [stack addArrangedSubview:button];
+        [button.widthAnchor constraintEqualToConstant:50].active = YES;
+        [button.heightAnchor constraintEqualToConstant:38].active = YES;
+
+        if ([key[0] isEqual:@"mod"]) {
+            button.tag = [key[3] unsignedIntegerValue];
+            [button addTarget:self action:@selector(microOSSoftKeyboardModifierTapped:) forControlEvents:UIControlEventTouchUpInside];
+            if ([key[1] isEqual:@"Ctrl"]) self.softControlButton = button;
+            else if ([key[1] isEqual:@"Option"]) self.softOptionButton = button;
+            else if ([key[1] isEqual:@"Command"]) self.softCommandButton = button;
+        } else {
+            button.tag = [key[3] integerValue];
+            [button addTarget:self action:@selector(microOSSoftKeyboardKeyTapped:) forControlEvents:UIControlEventTouchUpInside];
+        }
+    }
+
+    UILayoutGuide *content = scroll.contentLayoutGuide;
+    UILayoutGuide *frame = scroll.frameLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [blur.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [blur.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [blur.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [blur.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+
+        [scroll.leadingAnchor constraintEqualToAnchor:blur.contentView.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:blur.contentView.trailingAnchor],
+        [scroll.topAnchor constraintEqualToAnchor:blur.contentView.topAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:blur.contentView.bottomAnchor],
+
+        [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:12],
+        [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-12],
+        [stack.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+        [stack.heightAnchor constraintEqualToAnchor:frame.heightAnchor],
+    ]];
+
+    self.softKeyboardAccessory = container;
+    [self microOSUpdateSoftKeyboardModifierButtons];
+    return container;
+}
+- (UIButton *)microOSSoftKeyboardButtonWithTitle:(NSString *)title symbol:(NSString *)symbol {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButtonConfiguration *config = [UIButtonConfiguration filledButtonConfiguration];
+    config.image = [UIImage systemImageNamed:symbol];
+    config.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
+    config.imagePlacement = NSDirectionalRectEdgeTop;
+    config.baseBackgroundColor = [UIColor.secondarySystemFillColor colorWithAlphaComponent:0.68];
+    config.baseForegroundColor = UIColor.labelColor;
+    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    button.configuration = config;
+    button.accessibilityLabel = title;
+    button.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.35].CGColor;
+    button.layer.borderWidth = 0.5;
+    button.layer.cornerCurve = kCACornerCurveContinuous;
+    return button;
+}
+- (void)microOSSoftKeyboardModifierTapped:(UIButton *)sender {
+    uint32_t flag = (uint32_t)sender.tag;
+    uint32_t mods = microOSKeyboardModifiersFromNSEvent(self.keyMods);
+    mods = (mods & flag) ? (mods & ~flag) : (mods | flag);
+    [self microOSDispatchModifiers:microOSNSEventModifiersFromKeyboard(mods)];
+}
+- (void)microOSSoftKeyboardKeyTapped:(UIButton *)sender {
+    [self microOSSendSoftKey:(int32_t)sender.tag text:@""];
+}
+- (void)microOSClearSoftKeyboardModifiers {
+    uint32_t mods = microOSKeyboardModifiersFromNSEvent(self.keyMods);
+    mods &= ~(MicroOSKeyboardModifierControl | MicroOSKeyboardModifierOption | MicroOSKeyboardModifierCommand);
+    [self microOSDispatchModifiers:microOSNSEventModifiersFromKeyboard(mods)];
+}
+- (void)microOSUpdateSoftKeyboardModifierButtons {
+    [self microOSUpdateSoftKeyboardButton:self.softControlButton active:(self.keyMods & NSEventModifierFlagControl) != 0];
+    [self microOSUpdateSoftKeyboardButton:self.softOptionButton active:(self.keyMods & NSEventModifierFlagOption) != 0];
+    [self microOSUpdateSoftKeyboardButton:self.softCommandButton active:(self.keyMods & NSEventModifierFlagCommand) != 0];
+}
+- (void)microOSUpdateSoftKeyboardButton:(UIButton *)button active:(BOOL)active {
+    if (!button) return;
+    UIButtonConfiguration *config = button.configuration;
+    config.baseBackgroundColor = active
+        ? [UIColor.systemBlueColor colorWithAlphaComponent:0.72]
+        : [UIColor.secondarySystemFillColor colorWithAlphaComponent:0.68];
+    config.baseForegroundColor = active ? UIColor.whiteColor : UIColor.labelColor;
+    button.configuration = config;
+}
 @end
+
+static void microOSBackingKeyboardSinkCallback(int32_t phase, int32_t key, uint32_t modifiers, const char *text, void *context) {
+    MicroOSBackingView *view = (__bridge MicroOSBackingView *)context;
+    NSString *value = text ? [NSString stringWithUTF8String:text] : @"";
+    [view microOSReceiveKernelKeyboardPhase:phase key:key modifiers:modifiers text:value ?: @""];
+}
 
 // A frame callback the app installed via NSView -displayLinkWithTarget:selector:;
 // NSApplication.run invokes it directly so it never depends on a CADisplayLink

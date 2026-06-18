@@ -28,8 +28,12 @@ void micro_os_process_observe_exit(void (*callback)(int32_t pid, void *context),
 int32_t micro_os_ptty_create(const char *name);
 void micro_os_ptty_write(int32_t id, const char *text);
 void micro_os_ptty_input(int32_t id, const char *text);
+void micro_os_ptty_key_input(int32_t id, int32_t key, uint32_t modifiers, const char *text);
 int32_t micro_os_ptty_read(int32_t id, char *buffer, int32_t maxBytes);
 void micro_os_ptty_observe_output(int32_t id, void (*callback)(int32_t id, const char *text, void *context), void *context);
+int32_t micro_os_keyboard_sink_register(void (*callback)(int32_t phase, int32_t key, uint32_t modifiers, const char *text, void *context), void *context);
+void micro_os_keyboard_sink_unregister(int32_t sinkID);
+void micro_os_keyboard_dispatch(int32_t sinkID, int32_t phase, int32_t key, uint32_t modifiers, const char *text);
 uint32_t micro_os_tty_get_lflag(void);
 void micro_os_tty_set_lflag(uint32_t lflag);
 void micro_os_process_keep_alive(void);

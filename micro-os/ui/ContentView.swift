@@ -9,7 +9,7 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             ConsoleView(lines: kernel.consoleLines) { input in
-                kernel.enqueueStdin(input)
+                kernel.enqueueKeyboardInput(input)
             }
 
             ForEach(kernel.overlays) { overlay in

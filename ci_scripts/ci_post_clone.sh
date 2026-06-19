@@ -41,6 +41,13 @@ if ! command -v gsed >/dev/null 2>&1; then
   brew install gnu-sed
 fi
 
+# fastfetch is an official CMake project, so Xcode Cloud needs CMake available
+# before the optional payload build reaches it.
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "==> micro-os CI: installing CMake (fastfetch build prerequisite)"
+  brew install cmake
+fi
+
 # wm is a required system module in the public payload. Resolve package
 # dependencies before the explicit wm target build, while keeping the app scheme
 # independent from wm.

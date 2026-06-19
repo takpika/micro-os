@@ -205,10 +205,13 @@ build_wm_xcframework() {
     dir="$BUILD/wm-$plat"
     rm -rf "$dir"; mkdir -p "$dir"
     abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+    arch=arm64
+    if [ "$plat" = iphonesimulator ]; then arch="$(uname -m)"; fi
     xcrun xcodebuild -project "$ROOT/micro-os.xcodeproj" -target wm \
       -sdk "$plat" -configuration Release \
       CODE_SIGNING_ALLOWED=NO \
       CONFIGURATION_BUILD_DIR="$dir" \
+      ARCHS="$arch" \
       FRAMEWORK_SEARCH_PATHS="$abi_parent" \
       OTHER_LDFLAGS="-framework MicroOSABI" \
       build >/dev/null
@@ -279,7 +282,7 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
     # upstream toybox applets; /proc, /dev, and Linux-netlink based tools are
     # deliberately left out instead of faking platform data in the shim.
     en(){ sed -i '' "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config; }
-    for applet in DIFF HOST PING PING6 TELNET; do en "$applet"; done
+    for applet in DIFF GZIP HOST MORE PING PING6 TELNET; do en "$applet"; done
     sed -i '' 's/^CONFIG_IFCONFIG=y$/# CONFIG_IFCONFIG is not set/' .config
     sed -i '' 's/^CONFIG_IP=y$/# CONFIG_IP is not set/' .config
     # linux32 needs personality() — a Linux syscall absent on Apple platforms
@@ -385,7 +388,7 @@ write_setup_path() {  # slice
     echo '# init is PID 1, not a command.'
     echo 'for d in "$FW"/*.framework'
     echo 'do n="${d##*/}"; n="${n%.framework}"'
-    echo '   case "$n" in toybox|init|MicroOSABI|libcrypto|libssl|libuv|libisc|libdns|libisccfg|libirs) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
+    echo '   case "$n" in toybox|init|MicroOSABI|libcrypto|libssl|libuv|libisc|libdns|libisccfg|libirs|zlib|libbz2|liblzma) ;; *) "$T" ln -sf "$d/$n" "$BIN/$n";; esac'
     echo 'done'
     echo '# Bundled app data -> the working-dir-relative ./data an app expects'
     echo '# (an app that reads ./data from its CWD finds it at $HOME/data).'
@@ -1107,6 +1110,379 @@ build_infozip_xcframework() {
   echo "built $name -> payload/$name.xcframework ($PLATFORMS) [official Info-ZIP, framework]"
 }
 
+# ---- zlib/gzip/xz/bzip2/less/awk: official sources, built without source patches ----
+# gzip and more are upstream toybox applets enabled in the system toybox build.
+# zlib is shipped as a dynamic framework for programs that want libz, not as a
+# shell command.
+ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
+ZLIB_SHA256="${ZLIB_SHA256:-9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23}"
+XZ_VERSION="${XZ_VERSION:-5.8.1}"
+XZ_SHA256="${XZ_SHA256:-0b54f79df85912504de0b14aec7971e3f964491af1812d83447005807513cd9e}"
+BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
+BZIP2_SHA256="${BZIP2_SHA256:-ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269}"
+LESS_VERSION="${LESS_VERSION:-679}"
+LESS_SHA256="${LESS_SHA256:-9b68820c34fa8a0af6b0e01b74f0298bcdd40a0489c61649b47058908a153d78}"
+AWK_VERSION="${AWK_VERSION:-20250116}"
+AWK_SHA256="${AWK_SHA256:-e031b1e1d2b230f276f975bffb923f0ea15f798c839d15a3f26a1a39448e32d7}"
+LIBBZ2_INSTALL_NAME="@loader_path/../libbz2.framework/libbz2"
+LIBLZMA_INSTALL_NAME="@loader_path/../liblzma.framework/liblzma"
+
+fetch_zlib_source() {
+  ZLIB_TARBALL="$BUILD/zlib/zlib-$ZLIB_VERSION.tar.gz"
+  fetch_verified_tarball zlib "$ZLIB_VERSION" \
+    "https://zlib.net/fossils/zlib-$ZLIB_VERSION.tar.gz" \
+    "$ZLIB_SHA256" "$ZLIB_TARBALL"
+}
+
+build_zlib_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_zlib_source
+  curl_platform_vars "$plat"
+
+  local cc d src objdir objects file obj abi_parent
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  src="$BUILD/zlib/zlib-$plat-src"
+  objdir="$BUILD/zlib/zlib-$plat-obj"
+  rm -rf "$src" "$objdir"; mkdir -p "$src" "$objdir"
+  tar -xzf "$ZLIB_TARBALL" -C "$src" --strip-components 1
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/zlib-libc.o"
+  objects=("$d/zlib-libc.o")
+  for file in adler32.c compress.c crc32.c deflate.c gzclose.c gzlib.c gzread.c \
+              gzwrite.c infback.c inffast.c inflate.c inftrees.c trees.c \
+              uncompr.c zutil.c; do
+    obj="$objdir/${file%.c}.o"
+    "$cc" -c $target_flags -fPIC -Wno-implicit-function-declaration \
+      -I "$INCLUDE" -I "$src" "$src/$file" -o "$obj"
+    objects+=("$obj")
+  done
+
+  "$cc" -dynamiclib $target_flags "${objects[@]}" \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
+}
+
+build_zlib_xcframework() {
+  fetch_zlib_source || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/zlib.dylib"
+    echo "  building zlib slice: $plat"
+    build_zlib_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/zlib.framework"
+    make_framework "$slice" "$fw" "zlib" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/zlib.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/zlib.xcframework" >/dev/null
+  echo "built zlib -> payload/zlib.xcframework ($PLATFORMS) [official zlib $ZLIB_VERSION, framework]"
+}
+
+fetch_xz_source() {
+  XZ_TARBALL="$BUILD/xz/xz-$XZ_VERSION.tar.xz"
+  fetch_verified_tarball xz "$XZ_VERSION" \
+    "https://tukaani.org/xz/xz-$XZ_VERSION.tar.xz" \
+    "$XZ_SHA256" "$XZ_TARBALL"
+}
+
+build_xz_lzma_slice_set() {  # plat product_dir
+  local plat="$1"; local products="$2"
+  fetch_xz_source
+  curl_platform_vars "$plat"
+
+  local cc d src bld abi_parent
+  cc="$(xcrun -f clang)"
+  d="$products"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  src="$BUILD/xz/xz-$plat-src"
+  bld="$BUILD/xz/xz-$plat-build"
+  rm -rf "$src" "$bld" "$products"; mkdir -p "$src" "$bld" "$products"
+  tar -xf "$XZ_TARBALL" -C "$src" --strip-components 1
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/xz-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/xz-libc.o"
+  cmake -S "$src" -B "$bld" -G "Unix Makefiles" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_SYSROOT="$sdk" \
+    -DCMAKE_OSX_ARCHITECTURES="$arch" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+    -DCMAKE_C_COMPILER="$cc" \
+    -DCMAKE_C_FLAGS="$target_flags -fPIC -I$INCLUDE -include $INCLUDE/micro_os_crt.h" \
+    -DCMAKE_SHARED_LINKER_FLAGS="$target_flags -F$abi_parent -framework MicroOSABI" \
+    -DCMAKE_EXE_LINKER_FLAGS="$target_flags -dynamiclib -Wl,-alias,_main,_entry $d/xz-crt.o $d/xz-libc.o -F$abi_parent -framework MicroOSABI" \
+    -DBUILD_SHARED_LIBS=ON \
+    -DXZ_TOOL_XZ=ON \
+    -DXZ_TOOL_XZDEC=OFF \
+    -DXZ_TOOL_LZMADEC=OFF \
+    -DXZ_TOOL_LZMAINFO=OFF \
+    -DXZ_NLS=OFF \
+    -DXZ_THREADS=no
+  cmake --build "$bld" --target xz --parallel "${MAKE_JOBS:-2}"
+  cp -f "$bld/xz" "$products/xz.dylib"
+  cp -f "$bld/liblzma.dylib" "$products/liblzma.dylib"
+  xcrun install_name_tool -id "$LIBLZMA_INSTALL_NAME" "$products/liblzma.dylib" 2>/dev/null || true
+  xcrun install_name_tool -change "$bld/liblzma.dylib" "$LIBLZMA_INSTALL_NAME" "$products/xz.dylib" 2>/dev/null || true
+  xcrun install_name_tool -change "@rpath/liblzma.dylib" "$LIBLZMA_INSTALL_NAME" "$products/xz.dylib" 2>/dev/null || true
+  xcrun install_name_tool -change "@rpath/liblzma.5.dylib" "$LIBLZMA_INSTALL_NAME" "$products/xz.dylib" 2>/dev/null || true
+}
+
+build_xz_xcframework() {
+  fetch_xz_source || return 1
+  local names=(liblzma xz)
+  local name plat products fw
+  for plat in $PLATFORMS; do
+    products="$BUILD/xz/products-$plat"
+    echo "  building xz/liblzma slice set: $plat"
+    build_xz_lzma_slice_set "$plat" "$products" || return 1
+    for name in "${names[@]}"; do
+      fw="$BUILD/xz/$plat/$name.framework"
+      make_framework "$products/$name.dylib" "$fw" "$name" "$plat"
+    done
+  done
+  for name in "${names[@]}"; do
+    local fws=()
+    for plat in $PLATFORMS; do
+      fws+=(-framework "$BUILD/xz/$plat/$name.framework")
+    done
+    rm -rf "$OUT/$name.xcframework"
+    xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/$name.xcframework" >/dev/null
+    echo "built $name -> payload/$name.xcframework ($PLATFORMS) [official xz $XZ_VERSION, framework]"
+  done
+}
+
+fetch_bzip2_source() {
+  BZIP2_TARBALL="$BUILD/bzip2/bzip2-$BZIP2_VERSION.tar.gz"
+  fetch_verified_tarball bzip2 "$BZIP2_VERSION" \
+    "https://sourceware.org/pub/bzip2/bzip2-$BZIP2_VERSION.tar.gz" \
+    "$BZIP2_SHA256" "$BZIP2_TARBALL"
+}
+
+build_bzip2_slice_set() {  # plat product_dir
+  local plat="$1"; local products="$2"
+  fetch_bzip2_source
+  curl_platform_vars "$plat"
+
+  local cc d src objdir objects file obj abi_parent
+  cc="$(xcrun -f clang)"
+  d="$products"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  src="$BUILD/bzip2/bzip2-$plat-src"
+  objdir="$BUILD/bzip2/bzip2-$plat-obj"
+  rm -rf "$src" "$objdir" "$products"; mkdir -p "$src" "$objdir" "$products"
+  tar -xzf "$BZIP2_TARBALL" -C "$src" --strip-components 1
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/bzip2-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/bzip2-libc.o"
+  local lib_objects=()
+  for file in blocksort.c huffman.c crctable.c randtable.c compress.c \
+              decompress.c bzlib.c; do
+    obj="$objdir/${file%.c}.o"
+    "$cc" -c $target_flags -fPIC -I "$INCLUDE" -I "$src" "$src/$file" -o "$obj"
+    lib_objects+=("$obj")
+  done
+
+  "$cc" -dynamiclib $target_flags "${lib_objects[@]}" \
+    -install_name "$LIBBZ2_INSTALL_NAME" -o "$products/libbz2.dylib"
+
+  obj="$objdir/bzip2.o"
+  "$cc" -c $target_flags -fPIC -Dmain=entry \
+    -I "$INCLUDE" -I "$src" -include micro_os_crt.h \
+    "$src/bzip2.c" -o "$obj"
+  "$cc" -dynamiclib $target_flags "$d/bzip2-crt.o" "$d/bzip2-libc.o" "$obj" \
+    "$products/libbz2.dylib" -F "$abi_parent" -framework MicroOSABI \
+    -o "$products/bzip2.dylib"
+  xcrun install_name_tool -change "$products/libbz2.dylib" "$LIBBZ2_INSTALL_NAME" "$products/bzip2.dylib" 2>/dev/null || true
+}
+
+build_bzip2_xcframework() {
+  fetch_bzip2_source || return 1
+  local names=(libbz2 bzip2)
+  local name plat products fw
+  for plat in $PLATFORMS; do
+    products="$BUILD/bzip2/products-$plat"
+    echo "  building bzip2/libbz2 slice set: $plat"
+    build_bzip2_slice_set "$plat" "$products" || return 1
+    for name in "${names[@]}"; do
+      fw="$BUILD/bzip2/$plat/$name.framework"
+      make_framework "$products/$name.dylib" "$fw" "$name" "$plat"
+    done
+  done
+  for name in "${names[@]}"; do
+    local fws=()
+    for plat in $PLATFORMS; do
+      fws+=(-framework "$BUILD/bzip2/$plat/$name.framework")
+    done
+    rm -rf "$OUT/$name.xcframework"
+    xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/$name.xcframework" >/dev/null
+    echo "built $name -> payload/$name.xcframework ($PLATFORMS) [official bzip2 $BZIP2_VERSION, framework]"
+  done
+}
+
+fetch_less_source() {
+  LESS_TARBALL="$BUILD/less/less-$LESS_VERSION.tar.gz"
+  fetch_verified_tarball less "$LESS_VERSION" \
+    "https://www.greenwoodsoftware.com/less/less-$LESS_VERSION.tar.gz" \
+    "$LESS_SHA256" "$LESS_TARBALL"
+}
+
+build_less_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_less_source
+  curl_platform_vars "$plat"
+
+  local cc d src macsdk abi_parent
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+  src="$BUILD/less/less-$plat-src"
+  rm -rf "$src"; mkdir -p "$src"
+  tar -xzf "$LESS_TARBALL" -C "$src" --strip-components 1
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/less-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/less-libc.o"
+  (
+    cd "$src"
+    env \
+      CC="$cc" \
+      CFLAGS="$target_flags -fPIC -I$INCLUDE -idirafter $macsdk/usr/include -include micro_os_crt.h -DREGEX_MALLOC=1" \
+      CPPFLAGS="-I$INCLUDE -idirafter $macsdk/usr/include" \
+      LDFLAGS="$target_flags -lncurses" \
+      ./configure --host="$host" --with-regex=posix --with-secure
+    make -j"${MAKE_JOBS:-2}" less \
+      LDFLAGS="$target_flags -dynamiclib -Wl,-alias,_main,_entry $d/less-crt.o $d/less-libc.o -F$abi_parent -framework MicroOSABI -lncurses"
+    cp -f less "$out"
+  ) || return 1
+}
+
+build_less_xcframework() {
+  fetch_less_source || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/less.dylib"
+    echo "  building less slice: $plat"
+    build_less_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/less.framework"
+    make_framework "$slice" "$fw" "less" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/less.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/less.xcframework" >/dev/null
+  echo "built less -> payload/less.xcframework ($PLATFORMS) [official less $LESS_VERSION, framework]"
+}
+
+fetch_awk_source() {
+  AWK_TARBALL="$BUILD/awk/awk-$AWK_VERSION.tar.gz"
+  fetch_verified_tarball awk "$AWK_VERSION" \
+    "https://github.com/onetrueawk/awk/archive/refs/tags/$AWK_VERSION.tar.gz" \
+    "$AWK_SHA256" "$AWK_TARBALL"
+}
+
+build_awk_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_awk_source
+  curl_platform_vars "$plat"
+
+  local cc d src objdir objects file obj abi_parent
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  src="$BUILD/awk/awk-$plat-src"
+  objdir="$BUILD/awk/awk-$plat-obj"
+  rm -rf "$src" "$objdir"; mkdir -p "$src" "$objdir"
+  tar -xzf "$AWK_TARBALL" -C "$src" --strip-components 1
+  (
+    cd "$src"
+    make -f makefile HOSTCC=cc CC=cc CFLAGS= awkgram.tab.c awkgram.tab.h proctab.c
+  ) || return 1
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/awk-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/awk-libc.o"
+  objects=("$d/awk-crt.o" "$d/awk-libc.o")
+  for file in awkgram.tab.c b.c main.c parse.c proctab.c tran.c lib.c run.c lex.c; do
+    obj="$objdir/${file%.c}.o"
+    "$cc" -c $target_flags -fPIC -Dmain=entry \
+      -I "$INCLUDE" -I "$src" -include micro_os_crt.h \
+      "$src/$file" -o "$obj"
+    objects+=("$obj")
+  done
+
+  "$cc" -dynamiclib $target_flags "${objects[@]}" -lm \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
+}
+
+build_awk_xcframework() {
+  fetch_awk_source || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/awk.dylib"
+    echo "  building awk slice: $plat"
+    build_awk_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/awk.framework"
+    make_framework "$slice" "$fw" "awk" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/awk.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/awk.xcframework" >/dev/null
+  echo "built awk -> payload/awk.xcframework ($PLATFORMS) [official One True Awk $AWK_VERSION, framework]"
+}
+
+build_traceroute_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_network_cmds_sources
+  curl_platform_vars "$plat"
+
+  local cc d src objdir compat macsdk objects file obj abi_parent
+  cc="$(xcrun -f clang)"
+  d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+  src="$BUILD/network_cmds/traceroute-$plat-src"
+  objdir="$BUILD/network_cmds/traceroute-$plat-obj"
+  compat="$BUILD/network_cmds/traceroute-$plat-compat"
+  rm -rf "$src" "$objdir" "$compat"; mkdir -p "$src" "$objdir" "$compat/net"
+  tar -xzf "$NETWORK_CMDS_TARBALL" -C "$src" --strip-components 1
+  cp "$macsdk/usr/include/net/route.h" "$compat/net/route.h"
+
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/traceroute-crt.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/traceroute-libc.o"
+  objects=("$d/traceroute-crt.o" "$d/traceroute-libc.o")
+  for file in traceroute.c ifaddrlist.c findsaddr-socket.c as.c version.c; do
+    obj="$objdir/${file%.c}.o"
+    "$cc" -c $target_flags -fPIC -Dmain=entry \
+      -I "$compat" -I "$INCLUDE" -I "$src/traceroute.tproj" \
+      -idirafter "$macsdk/usr/include" -include micro_os_crt.h \
+      -Wno-deprecated-non-prototype -Wno-implicit-function-declaration -Wno-int-conversion \
+      "$src/traceroute.tproj/$file" -o "$obj"
+    objects+=("$obj")
+  done
+
+  "$cc" -dynamiclib $target_flags "${objects[@]}" \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
+}
+
+build_traceroute_xcframework() {
+  fetch_network_cmds_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/traceroute.dylib"
+    echo "  building traceroute slice: $plat"
+    build_traceroute_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/traceroute.framework"
+    make_framework "$slice" "$fw" "traceroute" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/traceroute.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/traceroute.xcframework" >/dev/null
+  echo "built traceroute -> payload/traceroute.xcframework ($PLATFORMS) [official Apple network_cmds $NETWORK_CMDS_VERSION, framework]"
+}
+
 # ---- whois: official FreeBSD usr.bin/whois source, built without source patches ----
 WHOIS_VERSION="${WHOIS_VERSION:-freebsd-14.3}"
 WHOIS_SHA256="${WHOIS_SHA256:-2145be939860e72b3a3a3c4ee759e55ff16ee794dd32b1a9f604a4338680f05d}"
@@ -1270,7 +1646,7 @@ build_apple_uptime_slice() {  # out plat
     "$d/uptime-main.o" "$d/uptime-pr-time.o" "$d/uptime-proc-compare.o" \
     "$d/uptime-libxo.o" "$d/uptime-xo-encoder.o" \
     "$d/uptime-crt.o" "$d/uptime-libc.o" "$d/uptime-shim.o" \
-    -F "$abi_parent" -framework MicroOSABI -lsbuf -o "$out"
+    -F "$abi_parent" -framework MicroOSABI -lsbuf -lresolv -o "$out"
   validate_unexpected_undefineds "$out" uptime "$plat"
 }
 
@@ -1684,10 +2060,17 @@ build_one() {
     MicroOSABI)            build_xcf MicroOSABI build_microosabi "$CRT/micro_os_abi.c" ;;
     wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
+    gzip|more)             build_toybox_xcframework ;;
     curl)                  build_curl_xcframework ;;
     ifconfig)              build_ifconfig_xcframework ;;
     zip)                   build_infozip_xcframework zip build_zip_slice ;;
     unzip)                 build_infozip_xcframework unzip build_unzip_slice ;;
+    zlib)                  build_zlib_xcframework ;;
+    xz)                    build_xz_xcframework ;;
+    bzip2)                 build_bzip2_xcframework ;;
+    less)                  build_less_xcframework ;;
+    awk)                   build_awk_xcframework ;;
+    traceroute)            build_traceroute_xcframework ;;
     whois)                 build_whois_xcframework ;;
     uptime)                build_apple_uptime_xcframework ;;
     ps)                    build_apple_ps_xcframework ;;
@@ -1728,7 +2111,7 @@ done
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
 SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
-OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip whois uptime ps pkill fastfetch"
+OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip zlib xz bzip2 less awk traceroute whois uptime ps pkill fastfetch"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
   samples) GROUP_PROGRAMS="$SAMPLE_PROGRAMS" ;;

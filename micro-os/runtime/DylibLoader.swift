@@ -106,8 +106,14 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     // let concurrent/sequential processes corrupt each other. A distinct on-disk
     // path defeats dyld's by-realpath image caching, giving fresh __DATA. The
     // simulator does not enforce code signing, so a copy in a writable dir runs.
-    let bindToolDeps = ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"]
-    let needsIsolatedDeps = loadedStem == "dig" || loadedStem == "nslookup"
+    let dependencyFrameworks: [String: [String]] = [
+        "dig": ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"],
+        "nslookup": ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"],
+        "bzip2": ["libbz2"],
+        "xz": ["liblzma"],
+    ]
+    let isolatedDeps = dependencyFrameworks[loadedStem] ?? []
+    let needsIsolatedDeps = !isolatedDeps.isEmpty
     var simulatorLoadError: String?
     let isolatedPath: String
     let isolated: Bool
@@ -121,7 +127,7 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
         try? FileManager.default.removeItem(atPath: tempRoot)
         try? FileManager.default.createDirectory(atPath: tempRoot, withIntermediateDirectories: true)
 
-        for stem in bindToolDeps + [loadedStem] {
+        for stem in isolatedDeps + [loadedStem] {
             let src = "\(frameworksDir)/\(stem).framework"
             let dst = "\(tempRoot)/\(stem).framework"
             do {
@@ -133,7 +139,7 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
         }
 
         if simulatorLoadError == nil {
-            for stem in bindToolDeps {
+            for stem in isolatedDeps {
                 let depPath = "\(tempRoot)/\(stem).framework/\(stem)"
                 guard let depHandle = dlopen(depPath, RTLD_NOW | RTLD_LOCAL) else {
                     simulatorLoadError = "dlopen \(stem) failed: \(String(cString: dlerror()))"

@@ -41,21 +41,21 @@ if ! command -v gsed >/dev/null 2>&1; then
   brew install gnu-sed
 fi
 
-# wm is built via `xcodebuild -target wm`, which does NOT resolve Swift packages
-# on its own. Xcode Cloud hasn't resolved them yet at post-clone time, so resolve
-# SwiftUIWindow up front (into the project's default DerivedData, which the wm
-# build reuses) — otherwise the wm slice fails to link.
+# wm is a required system module in the public payload. Resolve package
+# dependencies before the explicit wm target build, while keeping the app scheme
+# independent from wm.
 echo "==> micro-os CI: resolving Swift package dependencies"
 xcrun xcodebuild -project micro-os.xcodeproj -resolvePackageDependencies
 
 # System programs: init, wm, toybox. Building toybox also fetches the verified
 # toybox tarball and regenerates payload/etc/setup-path (the boot provisioning,
-# which globs $BUNDLE/*.dylib at boot, so it also covers the demos below).
+# which globs $BUNDLE/*.dylib at boot, so it also covers the optional programs
+# and demos below).
 echo "==> micro-os CI: building system programs (init, wm, toybox)"
 scripts/build-system.sh
 
-echo "==> micro-os CI: building optional programs (curl, ifconfig, dig, nslookup, zip, unzip, whois, uptime, fastfetch)"
-GROUP=optional scripts/build-programs.sh curl ifconfig bind-dns-tools zip unzip whois uptime fastfetch
+echo "==> micro-os CI: building optional programs (curl, ifconfig, dig, nslookup, zip, unzip, whois, uptime, ps, pkill, fastfetch)"
+GROUP=optional scripts/build-programs.sh curl ifconfig bind-dns-tools zip unzip whois uptime ps pkill fastfetch
 
 echo "==> micro-os CI: building demo programs ($DEMOS)"
 # shellcheck disable=SC2086  # intentional word-splitting into program names

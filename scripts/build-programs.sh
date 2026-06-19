@@ -24,6 +24,7 @@ mkdir -p "$OUT" "$BUILD"
 PLATFORMS="${PLATFORMS:-iphoneos iphonesimulator}"
 CLANG_SDK=()
 SWIFT_SDK=()
+CURRENT_PLATFORM=""
 
 add_privacy_manifest() {
   local framework="$1"
@@ -62,6 +63,7 @@ add_distribution_privacy_manifests() {
 }
 
 set_platform() {
+  CURRENT_PLATFORM="$1"
   case "$1" in
     iphoneos)
       sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -146,7 +148,6 @@ validate_unexpected_undefineds() {  # dylib name plat
     | awk '{ print $NF }' \
     | sort -u \
     | awk '
-        /^_micro_os_/ { next }
         /^$/ { next }
         { print }
       ' > "$undef"
@@ -164,21 +165,36 @@ validate_unexpected_undefineds() {  # dylib name plat
 
 build_swift() {  # out source...
   out="$1"; shift
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" "$@" \
-    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" -Xlinker -undefined -Xlinker dynamic_lookup -o "$out"
+    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
+    -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
+    -o "$out"
 }
 
-build_c() {  # out source...  (plain C, no CRT shim; uses the host ABI directly)
+build_microosabi() {  # out source...  (the ABI provider itself; no self-link)
   out="$1"; shift
-  xcrun clang -dynamiclib -undefined dynamic_lookup "${CLANG_SDK[@]}" -I "$INCLUDE" "$@" -o "$out"
+  xcrun clang -dynamiclib "${CLANG_SDK[@]}" -I "$INCLUDE" "$@" -o "$out"
+}
+
+build_c() {  # out source...  (plain C, no CRT shim; links the host ABI framework)
+  out="$1"; shift
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
+  xcrun clang -dynamiclib "${CLANG_SDK[@]}" -I "$INCLUDE" \
+    "$@" -F "$abi_parent" -framework MicroOSABI -o "$out"
 }
 
 build_c_crt() {  # out source...
   out="$1"; shift; d="$(dirname "$out")"
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
-  xcrun clang -dynamiclib -undefined dynamic_lookup "${CLANG_SDK[@]}" -I "$INCLUDE" \
-    -include micro_os_crt.h "$@" "$d/crt.o" "$d/libc.o" -o "$out"
+  xcrun clang -dynamiclib "${CLANG_SDK[@]}" -I "$INCLUDE" \
+    -include micro_os_crt.h "$@" "$d/crt.o" "$d/libc.o" \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
 }
 
 # wm is a standalone Xcode target. Build it only when explicitly requested, then
@@ -188,10 +204,13 @@ build_wm_xcframework() {
   for plat in $PLATFORMS; do
     dir="$BUILD/wm-$plat"
     rm -rf "$dir"; mkdir -p "$dir"
+    abi_parent="$(microosabi_framework_parent "$plat")" || return 1
     xcrun xcodebuild -project "$ROOT/micro-os.xcodeproj" -target wm \
       -sdk "$plat" -configuration Release \
       CODE_SIGNING_ALLOWED=NO \
       CONFIGURATION_BUILD_DIR="$dir" \
+      FRAMEWORK_SEARCH_PATHS="$abi_parent" \
+      OTHER_LDFLAGS="-framework MicroOSABI" \
       build >/dev/null
     fw="$dir/wm.framework"
     make_framework "$dir/wm.dylib" "$fw" "wm" "$plat"
@@ -264,15 +283,15 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
     sed -i '' 's/^CONFIG_IFCONFIG=y$/# CONFIG_IFCONFIG is not set/' .config
     sed -i '' 's/^CONFIG_IP=y$/# CONFIG_IP is not set/' .config
     # linux32 needs personality() — a Linux syscall absent on Apple platforms
-    # (macOS too). The auto-prune can't catch it: -undefined dynamic_lookup lets
-    # it link, and the iOS SDK .tbd declares it, so it only fails at runtime
-    # dlopen. Disable it explicitly.
+    # (macOS too). Disable it explicitly instead of shipping a command that can
+    # only fail at runtime.
     sed -i '' 's/^CONFIG_LINUX32=y$/# CONFIG_LINUX32 is not set/' .config
     cflags="$tgt -Dmain=entry -include $work/inc/micro_os_crt.h -I $work/inc -ferror-limit=0"
     # iconv (iconv/iconv_open) and host (res_9_*) live in libiconv/libresolv —
     # present on iOS but not auto-loaded, so link them or those commands fail at
     # dlopen. They are NOT Linux-only (they work on macOS too).
-    ldflags="-dynamiclib -undefined dynamic_lookup -liconv -lresolv $work/crt.o $work/libc.o"
+    abi_parent="$(microosabi_framework_parent "$plat")" || exit 1
+    ldflags="-dynamiclib -F$abi_parent -framework MicroOSABI -liconv -lresolv $work/crt.o $work/libc.o"
     dis(){ sed -i '' "s/^CONFIG_$1=y\$/# CONFIG_$1 is not set/" .config; }
     symf(){ grep -E "^config [A-Z0-9_]+" "$1" 2>/dev/null | awk '{print $2}'; }
     # Disable every command implicated by errors in $1. Sets ch=1 if anything
@@ -619,6 +638,8 @@ build_curl_slice() {  # out plat
   local d="$(dirname "$out")"
   local curl_src="$BUILD/curl/curl-$plat-src"
   local ossl="$BUILD/curl/openssl-$plat"
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
 
   build_openssl_for_curl "$plat" "$ossl"
 
@@ -667,7 +688,7 @@ build_curl_slice() {  # out plat
         --enable-ca-native
     make -j"${MAKE_JOBS:-2}" -C lib libcurl.la
     make -j"${MAKE_JOBS:-2}" -C src curl \
-      LDFLAGS="$target_flags -dynamiclib -undefined dynamic_lookup -Wl,-alias,_main,_entry $d/curl-crt.o $d/curl-libc.o -L$ossl/lib" \
+      LDFLAGS="$target_flags -dynamiclib -Wl,-alias,_main,_entry $d/curl-crt.o $d/curl-libc.o -F$abi_parent -framework MicroOSABI -L$ossl/lib" \
       LIBS="-framework Security -framework CoreFoundation"
     cp -f src/curl "$out"
   ) || return 1
@@ -734,7 +755,7 @@ microosabi_framework_parent() {  # plat
   local plat="$1"
   local xcf="$OUT/MicroOSABI.xcframework"
   local fw=""
-  [ -d "$xcf" ] || { echo "BIND: MicroOSABI.xcframework not found; build MicroOSABI first" >&2; return 1; }
+  [ -d "$xcf" ] || { echo "MicroOSABI.xcframework not found; build MicroOSABI first" >&2; return 1; }
   case "$plat" in
     iphoneos)
       fw="$(find "$xcf" -path '*/MicroOSABI.framework' -type d | grep -v simulator | head -n 1 || true)"
@@ -743,7 +764,7 @@ microosabi_framework_parent() {  # plat
       fw="$(find "$xcf" -path '*/MicroOSABI.framework' -type d | grep simulator | head -n 1 || true)"
       ;;
   esac
-  [ -n "$fw" ] || { echo "BIND: MicroOSABI.xcframework slice for $plat not found; build MicroOSABI first" >&2; return 1; }
+  [ -n "$fw" ] || { echo "MicroOSABI.xcframework slice for $plat not found; build MicroOSABI first" >&2; return 1; }
   dirname "$fw"
 }
 
@@ -757,7 +778,7 @@ relink_bind_dns_libs_twolevel() {  # bind_src products uv_prefix openssl_prefix 
   local crypto_dep="$ossl/lib/libcrypto.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
 
   find "$src/lib/isc" -name '*.o' -print > "$products/libisc-objs.rsp"
-  "$cc" -dynamiclib $target_flags -undefined error \
+  "$cc" -dynamiclib $target_flags \
     -install_name "$BIND_LIBISC_INSTALL_NAME" \
     -o "$products/libisc.dylib" @"$products/libisc-objs.rsp" \
     "$shim_obj" \
@@ -765,19 +786,19 @@ relink_bind_dns_libs_twolevel() {  # bind_src products uv_prefix openssl_prefix 
     -L"$uv/lib" -L"$ossl/lib" -luv -lssl -lcrypto
 
   find "$src/lib/dns" -name '*.o' -print > "$products/libdns-objs.rsp"
-  "$cc" -dynamiclib $target_flags -undefined error \
+  "$cc" -dynamiclib $target_flags \
     -install_name "$BIND_LIBDNS_INSTALL_NAME" \
     -o "$products/libdns.dylib" @"$products/libdns-objs.rsp" \
     -L"$products" -L"$uv/lib" -L"$ossl/lib" -lisc -luv -lssl -lcrypto
 
   find "$src/lib/isccfg" -name '*.o' -print > "$products/libisccfg-objs.rsp"
-  "$cc" -dynamiclib $target_flags -undefined error \
+  "$cc" -dynamiclib $target_flags \
     -install_name "$BIND_LIBISCCFG_INSTALL_NAME" \
     -o "$products/libisccfg.dylib" @"$products/libisccfg-objs.rsp" \
     -L"$products" -ldns -lisc
 
   find "$src/lib/irs" -name '*.o' -print > "$products/libirs-objs.rsp"
-  "$cc" -dynamiclib $target_flags -undefined error \
+  "$cc" -dynamiclib $target_flags \
     -install_name "$BIND_LIBIRS_INSTALL_NAME" \
     -o "$products/libirs.dylib" @"$products/libirs-objs.rsp" \
     -L"$products" -lisc -ldns -lisccfg
@@ -832,6 +853,10 @@ build_bind_dns_tools_slice_set() {  # plat product_dir
         --without-lmdb --without-libxml2 --without-json-c --without-zlib \
         --without-readline --without-libidn2 --without-cmocka \
         --without-jemalloc --without-gssapi
+    # BIND's generated Darwin libtool still defaults to unresolved lookup for
+    # intermediate dylibs. The final shipped dylibs are linked by this script,
+    # but keep the build itself under the same rule.
+    perl -0pi -e 's/^allow_undefined_flag=.*$/allow_undefined_flag=""/m; s/\s-flat\x5fnamespace//g; s/\$wl\x2dundefined\s+\$\{wl\}dynamic\x5flookup\s+\$wl-no_fixup_chains//g' libtool
     make -j"${MAKE_JOBS:-2}" -C lib/isc all
     make -j"${MAKE_JOBS:-2}" -C lib/dns all
     make -j"${MAKE_JOBS:-2}" -C lib/isccfg all
@@ -863,12 +888,13 @@ build_bind_dns_tools_slice_set() {  # plat product_dir
       obj="$products/nslookup.o"
       "$cc" -c $target_flags -fPIC $bind_cpp "$bind_src/bin/dig/nslookup.c" -o "$obj"
     fi
-    "$cc" -dynamiclib $target_flags -undefined dynamic_lookup -Wl,-alias,_main,_entry \
+    "$cc" -dynamiclib $target_flags -Wl,-alias,_main,_entry \
       "$products/bind-crt.o" "$products/bind-libc.o" "$obj" \
       "$bind_src/bin/dig/.libs/dighost.o" "$products/getaddresses.o" \
       "$products/libirs.dylib" "$products/libisccfg.dylib" \
       "$products/libdns.dylib" "$products/libisc.dylib" \
       "$products/libuv.dylib" "$products/libssl.dylib" "$products/libcrypto.dylib" \
+      -F"$abi_parent" -framework MicroOSABI \
       -o "$products/$prog.dylib"
     xcrun install_name_tool -id "@rpath/$prog.framework/$prog" "$products/$prog.dylib" 2>/dev/null || true
     xcrun install_name_tool -change "$products/libirs.dylib" "$BIND_LIBIRS_INSTALL_NAME" "$products/$prog.dylib" 2>/dev/null || true
@@ -946,6 +972,8 @@ build_ifconfig_slice() {  # out plat
   "$cc" -isysroot "$sdk" -arch "$arch" $minv -I "$INCLUDE" \
     -c "$CRT/micro_os_libc_shim.c" -o "$d/ifconfig-libc.o"
 
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   local base_flags=(-isysroot "$sdk" -arch "$arch" $minv
     -I "$INCLUDE" -I "$src/ifconfig.tproj"
     -idirafter "$kern" -idirafter "$macsdk/usr/include")
@@ -958,8 +986,8 @@ build_ifconfig_slice() {  # out plat
     objects+=("$obj")
   done
 
-  "$cc" -dynamiclib -undefined dynamic_lookup -isysroot "$sdk" -arch "$arch" $minv \
-    "${objects[@]}" -o "$out"
+  "$cc" -dynamiclib -isysroot "$sdk" -arch "$arch" $minv \
+    "${objects[@]}" -F "$abi_parent" -framework MicroOSABI -o "$out"
 }
 
 build_ifconfig_xcframework() {
@@ -1001,9 +1029,10 @@ build_zip_slice() {  # out plat
   fetch_infozip_sources
   curl_platform_vars "$plat"
 
-  local cc d src objdir objects file obj
+  local cc d src objdir objects file obj abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   src="$BUILD/infozip/zip-$plat-src"
   objdir="$BUILD/infozip/zip-$plat-obj"
   rm -rf "$src" "$objdir"; mkdir -p "$src" "$objdir"
@@ -1023,7 +1052,8 @@ build_zip_slice() {  # out plat
     objects+=("$obj")
   done
 
-  "$cc" -dynamiclib -undefined dynamic_lookup $target_flags "${objects[@]}" -o "$out"
+  "$cc" -dynamiclib $target_flags "${objects[@]}" \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
 }
 
 build_unzip_slice() {  # out plat
@@ -1031,9 +1061,10 @@ build_unzip_slice() {  # out plat
   fetch_infozip_sources
   curl_platform_vars "$plat"
 
-  local cc d src objdir objects file obj
+  local cc d src objdir objects file obj abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   src="$BUILD/infozip/unzip-$plat-src"
   objdir="$BUILD/infozip/unzip-$plat-obj"
   rm -rf "$src" "$objdir"; mkdir -p "$src" "$objdir"
@@ -1054,7 +1085,8 @@ build_unzip_slice() {  # out plat
     objects+=("$obj")
   done
 
-  "$cc" -dynamiclib -undefined dynamic_lookup $target_flags "${objects[@]}" -o "$out"
+  "$cc" -dynamiclib $target_flags "${objects[@]}" \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
 }
 
 build_infozip_xcframework() {
@@ -1091,17 +1123,19 @@ build_whois_slice() {  # out plat
   fetch_whois_source
   curl_platform_vars "$plat"
 
-  local cc d
+  local cc d abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/whois-crt.o"
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/whois-libc.o"
-  "$cc" -dynamiclib -undefined dynamic_lookup $target_flags \
+  "$cc" -dynamiclib $target_flags \
     -Dmain=entry -DSOCK_NONBLOCK=0 -DINFTIM=-1 \
     '-D__printflike(a,b)=' '-D__dead2=__attribute__((noreturn))' \
     -Wno-implicit-function-declaration -Wno-deprecated-non-prototype -Wno-int-conversion \
     -I "$INCLUDE" -include micro_os_crt.h \
-    "$WHOIS_SOURCE" "$d/whois-crt.o" "$d/whois-libc.o" -o "$out"
+    "$WHOIS_SOURCE" "$d/whois-crt.o" "$d/whois-libc.o" \
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
 }
 
 build_whois_xcframework() {
@@ -1194,9 +1228,10 @@ build_apple_uptime_slice() {  # out plat
   fetch_apple_w_sources
   curl_platform_vars "$plat"
 
-  local cc d work macsdk libxo_src libxo_inc
+  local cc d work macsdk libxo_src libxo_inc abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   work="$BUILD/apple-shell-cmds/uptime-$plat"
   macsdk="$(xcrun --sdk macosx --show-sdk-path)"
   rm -rf "$work"; mkdir -p "$work"
@@ -1212,9 +1247,10 @@ build_apple_uptime_slice() {  # out plat
 
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/uptime-crt.o"
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/uptime-libc.o"
+  "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_uptime_shim.c" -o "$d/uptime-shim.o"
   "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
     -I "$INCLUDE" -I "$work" -I "$libxo_inc" -idirafter "$macsdk/usr/include" \
-    -Dmain=entry -DHAVE_KVM=0 -include micro_os_crt.h \
+    -Dmain=entry -DHAVE_KVM=0 -Drealhostname_sa=micro_os_realhostname_sa -include micro_os_crt.h \
     "$work/w.c" -o "$d/uptime-main.o"
   "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
     -I "$INCLUDE" -I "$work" -I "$libxo_inc" -idirafter "$macsdk/usr/include" \
@@ -1230,10 +1266,12 @@ build_apple_uptime_slice() {  # out plat
   "$cc" -c -Os -ffunction-sections -fdata-sections $target_flags \
     -DLIBXO_TEXT_ONLY=1 -I "$INCLUDE" -I "$libxo_src" -include micro_os_crt.h \
     "$libxo_src/xo_encoder.c" -o "$d/uptime-xo-encoder.o"
-  "$cc" -dynamiclib -undefined dynamic_lookup -Wl,-dead_strip $target_flags \
+  "$cc" -dynamiclib -Wl,-dead_strip $target_flags \
     "$d/uptime-main.o" "$d/uptime-pr-time.o" "$d/uptime-proc-compare.o" \
     "$d/uptime-libxo.o" "$d/uptime-xo-encoder.o" \
-    "$d/uptime-crt.o" "$d/uptime-libc.o" -lsbuf -o "$out"
+    "$d/uptime-crt.o" "$d/uptime-libc.o" "$d/uptime-shim.o" \
+    -F "$abi_parent" -framework MicroOSABI -lsbuf -o "$out"
+  validate_unexpected_undefineds "$out" uptime "$plat"
 }
 
 build_apple_uptime_xcframework() {
@@ -1294,9 +1332,10 @@ build_apple_ps_slice() {  # out plat
   fetch_adv_cmds_sources
   curl_platform_vars "$plat"
 
-  local cc d macsdk compat flags objects file obj
+  local cc d macsdk compat flags objects file obj abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   macsdk="$(xcrun --sdk macosx --show-sdk-path)"
   compat="$BUILD/apple-adv-cmds/compat-$plat"
   rm -rf "$compat"; mkdir -p "$compat/mach"
@@ -1317,8 +1356,8 @@ build_apple_ps_slice() {  # out plat
     "$cc" -c "${flags[@]}" "$ADV_CMDS_DIR/$file" -o "$obj"
     objects+=("$obj")
   done
-  "$cc" -dynamiclib -undefined dynamic_lookup -Wl,-dead_strip $target_flags \
-    "${objects[@]}" -o "$out"
+  "$cc" -dynamiclib -Wl,-dead_strip $target_flags \
+    "${objects[@]}" -F "$abi_parent" -framework MicroOSABI -o "$out"
   validate_unexpected_undefineds "$out" ps "$plat"
 }
 
@@ -1344,9 +1383,10 @@ build_apple_pkill_slice() {  # out plat
   fetch_adv_cmds_sources
   curl_platform_vars "$plat"
 
-  local cc d macsdk
+  local cc d macsdk abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   macsdk="$(xcrun --sdk macosx --show-sdk-path)"
 
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/pkill-crt.o"
@@ -1357,9 +1397,9 @@ build_apple_pkill_slice() {  # out plat
     -I "$INCLUDE" -I "$ADV_CMDS_DIR" -idirafter "$macsdk/usr/include" \
     -include micro_os_crt.h \
     "$ADV_CMDS_DIR/pkill.c" -o "$d/pkill-main.o"
-  "$cc" -dynamiclib -undefined dynamic_lookup -Wl,-dead_strip $target_flags \
+  "$cc" -dynamiclib -Wl,-dead_strip $target_flags \
     "$d/pkill-main.o" "$d/pkill-sysmon.o" "$d/pkill-crt.o" "$d/pkill-libc.o" \
-    -o "$out"
+    -F "$abi_parent" -framework MicroOSABI -o "$out"
   validate_unexpected_undefineds "$out" pkill "$plat"
 }
 
@@ -1434,9 +1474,10 @@ build_fastfetch_slice() {  # out plat
   fetch_fastfetch_sources
   curl_platform_vars "$plat"
 
-  local cc d src bld macsdk fastfetch_cflags
+  local cc d src bld macsdk fastfetch_cflags abi_parent
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
   src="$BUILD/fastfetch/fastfetch-$plat-src"
   bld="$BUILD/fastfetch/fastfetch-$plat-build"
   macsdk="$(xcrun --sdk macosx --show-sdk-path)"
@@ -1458,7 +1499,7 @@ build_fastfetch_slice() {  # out plat
     -DCMAKE_C_FLAGS="$fastfetch_cflags" \
     -DCMAKE_OBJC_COMPILER="$cc" \
     -DCMAKE_OBJC_FLAGS="$fastfetch_cflags" \
-    -DCMAKE_EXE_LINKER_FLAGS="$target_flags -dynamiclib -undefined dynamic_lookup -Wl,-alias,_main,_entry $d/fastfetch-crt.o $d/fastfetch-libc.o" \
+    -DCMAKE_EXE_LINKER_FLAGS="$target_flags -dynamiclib -Wl,-alias,_main,_entry $d/fastfetch-crt.o $d/fastfetch-libc.o -F$abi_parent -framework MicroOSABI" \
     -DBINARY_LINK_TYPE=dlopen \
     -DHAVE_WORDEXP=OFF \
     -DHAVE_GLOB=OFF \
@@ -1479,9 +1520,10 @@ build_fastfetch_slice() {  # out plat
   "$cc" -c "$@" -DFASTFETCH_TARGET_BINARY_NAME=fastfetch \
     "$src/src/fastfetch.c" -o "$d/fastfetch-main.o"
   find "$bld/CMakeFiles/libfastfetch.dir" -name '*.o' -print > "$d/fastfetch-objs.rsp"
-  "$cc" -dynamiclib -undefined dynamic_lookup $target_flags -Wl,-alias,_main,_entry \
+  "$cc" -dynamiclib $target_flags -Wl,-alias,_main,_entry \
     "$d/fastfetch-crt.o" "$d/fastfetch-libc.o" "$d/fastfetch-main.o" \
     @"$d/fastfetch-objs.rsp" -lz -lsqlite3 -lobjc \
+    -F "$abi_parent" -framework MicroOSABI \
     -framework Foundation -framework CoreFoundation \
     -o "$out"
 }
@@ -1505,6 +1547,8 @@ build_fastfetch_xcframework() {
 
 build_vcocoa() {  # out appsrc
   out="$1"; appsrc="$2"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vcocoa"
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
@@ -1515,11 +1559,15 @@ build_vcocoa() {  # out appsrc
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
     "$INCLUDE/MicroOS.swift" "$rt/VCocoaRuntime.swift" \
     "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/appkit.o" \
-    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" -Xlinker -undefined -Xlinker dynamic_lookup -o "$out"
+    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
+    -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
+    -o "$out"
 }
 
 build_vwin32() {  # out appsrc
   out="$1"; appsrc="$2"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vwin32"
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
@@ -1530,7 +1578,9 @@ build_vwin32() {  # out appsrc
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
     "$INCLUDE/MicroOS.swift" "$rt/VWin32Runtime.swift" \
     "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/win32.o" \
-    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" -Xlinker -undefined -Xlinker dynamic_lookup -o "$out"
+    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
+    -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
+    -o "$out"
 }
 
 # Seed a default init.conf into payload/etc when one doesn't exist yet.
@@ -1631,7 +1681,7 @@ build_one() {
     # against this framework, which the app loads globally at boot. On device dyld
     # won't resolve those flat-namespace symbols against the main executable, only
     # against loaded dylibs — so the ABI must live in one.
-    MicroOSABI)            build_xcf MicroOSABI build_c "$CRT/micro_os_abi.c" ;;
+    MicroOSABI)            build_xcf MicroOSABI build_microosabi "$CRT/micro_os_abi.c" ;;
     wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
     curl)                  build_curl_xcframework ;;

@@ -1,15 +1,10 @@
 // MicroOSABI — the micro_os_* host ABI as a real dylib.
 //
-// Programs resolve the host ABI (micro_os_spawn, _stdout, …) by flat-namespace
-// dynamic_lookup. On the iOS Simulator that resolves against the main executable
-// fine; on a real device dyld does NOT search the main executable for such
-// lookups — only loaded dylibs/frameworks. (That's why it worked on the sim:
-// in Debug the host code lived in a debug *dylib*.) So this framework provides
-// the symbols from a dylib that dyld *does* search. The app dlopen()s it with
-// RTLD_GLOBAL at boot, before any program loads, so every program's micro_os_*
-// import binds here. Each function is a thin forwarder to the real implementation,
-// looked up once through a resolver the app installs at boot (see
-// micro_os_abi_set_resolver below).
+// Programs resolve the host ABI (micro_os_spawn, _stdout, …) by linking this
+// framework explicitly. The app loads it before any program starts, and each
+// function is a thin forwarder to the real implementation, looked up once
+// through a resolver the app installs at boot (see micro_os_abi_set_resolver
+// below).
 #include "micro_os.h"
 
 // The app installs a resolver mapping a host-ABI symbol name to its real
@@ -53,9 +48,22 @@ void micro_os_process_observe_exit(void (*cb)(int32_t,void*), void *ctx) {
 int32_t micro_os_ptty_create(const char *n) { return ((int32_t(*)(const char*))IMPL(micro_os_ptty_create))(n); }
 void micro_os_ptty_write(int32_t id, const char *t) { ((void(*)(int32_t,const char*))IMPL(micro_os_ptty_write))(id,t); }
 void micro_os_ptty_input(int32_t id, const char *t) { ((void(*)(int32_t,const char*))IMPL(micro_os_ptty_input))(id,t); }
+void micro_os_ptty_key_input(int32_t id, int32_t key, uint32_t modifiers, const char *text) {
+    ((void(*)(int32_t,int32_t,uint32_t,const char*))IMPL(micro_os_ptty_key_input))(id,key,modifiers,text);
+}
 int32_t micro_os_ptty_read(int32_t id, char *b, int32_t n) { return ((int32_t(*)(int32_t,char*,int32_t))IMPL(micro_os_ptty_read))(id,b,n); }
 void micro_os_ptty_observe_output(int32_t id, void (*cb)(int32_t,const char*,void*), void *ctx) {
     ((void(*)(int32_t,void(*)(int32_t,const char*,void*),void*))IMPL(micro_os_ptty_observe_output))(id,cb,ctx);
+}
+
+int32_t micro_os_keyboard_sink_register(void (*cb)(int32_t,int32_t,uint32_t,const char*,void*), void *ctx) {
+    return ((int32_t(*)(void(*)(int32_t,int32_t,uint32_t,const char*,void*),void*))IMPL(micro_os_keyboard_sink_register))(cb,ctx);
+}
+void micro_os_keyboard_sink_unregister(int32_t id) {
+    ((void(*)(int32_t))IMPL(micro_os_keyboard_sink_unregister))(id);
+}
+void micro_os_keyboard_dispatch(int32_t id, int32_t phase, int32_t key, uint32_t modifiers, const char *text) {
+    ((void(*)(int32_t,int32_t,int32_t,uint32_t,const char*))IMPL(micro_os_keyboard_dispatch))(id,phase,key,modifiers,text);
 }
 
 uint32_t micro_os_tty_get_lflag(void) { return ((uint32_t(*)(void))IMPL(micro_os_tty_get_lflag))(); }

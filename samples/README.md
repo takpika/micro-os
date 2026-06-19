@@ -52,7 +52,10 @@ The script just wraps `clang`/`swiftc`. The plain-C case, for reference:
 ```sh
 clang -c -I include crt/micro_os_crt.c -o /tmp/micro_os_crt.o
 clang -c -I include crt/micro_os_libc_shim.c -o /tmp/micro_os_libc_shim.o
-clang -dynamiclib -undefined dynamic_lookup -I include -include micro_os_crt.h samples/demo-program.c /tmp/micro_os_crt.o /tmp/micro_os_libc_shim.o -o /tmp/demo-program.dylib
+clang -dynamiclib -I include -include micro_os_crt.h \
+  samples/demo-program.c /tmp/micro_os_crt.o /tmp/micro_os_libc_shim.o \
+  -F payload/MicroOSABI.xcframework/ios-arm64 -framework MicroOSABI \
+  -o /tmp/demo-program.dylib
 ```
 
 The dylib exports:
@@ -96,7 +99,8 @@ Swift dylibs can mount a real SwiftUI view by wrapping it in a platform hosting 
 CLANG_MODULE_CACHE_PATH=/tmp/micro-os-clang-cache \
 swiftc -emit-library -parse-as-library samples/SwiftOverlayProgram.swift \
   -module-name SwiftOverlayProgram \
-  -Xlinker -undefined -Xlinker dynamic_lookup \
+  -F payload/MicroOSABI.xcframework/ios-arm64 \
+  -Xlinker -framework -Xlinker MicroOSABI \
   -o /tmp/SwiftOverlayProgram.dylib
 ```
 
@@ -129,7 +133,9 @@ clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 -I include -I runtimes/vcocoa/inclu
 swiftc -emit-library -parse-as-library \
   include/MicroOS.swift runtimes/vcocoa/VCocoaRuntime.swift \
   /tmp/app.o /tmp/crt.o /tmp/libc.o /tmp/gui.o /tmp/appkit.o \
-  -module-name vcocoaTodo -Xlinker -undefined -Xlinker dynamic_lookup \
+  -module-name vcocoaTodo \
+  -F payload/MicroOSABI.xcframework/ios-arm64 \
+  -Xlinker -framework -Xlinker MicroOSABI \
   -o payload/vcocoaTodo.dylib
 ```
 
@@ -147,7 +153,9 @@ clang -c -DMICRO_OS_WIN32_SHIM=1 -I include -I runtimes/vwin32/include \
 swiftc -emit-library -parse-as-library \
   include/MicroOS.swift runtimes/vwin32/VWin32Runtime.swift \
   /tmp/app.o /tmp/crt.o /tmp/libc.o /tmp/gui.o /tmp/win32.o \
-  -module-name vwin32Todo -Xlinker -undefined -Xlinker dynamic_lookup \
+  -module-name vwin32Todo \
+  -F payload/MicroOSABI.xcframework/ios-arm64 \
+  -Xlinker -framework -Xlinker MicroOSABI \
   -o payload/vwin32Todo.dylib
 ```
 

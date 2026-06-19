@@ -161,6 +161,26 @@ validate_unexpected_undefineds() {  # dylib name plat
   fi
 }
 
+validate_absent_global_symbols() {  # dylib name symbols...
+  local dylib="$1"; local name="$2"; shift 2
+  local check_dir="$BUILD/forbidden-symbol-check/$name"
+  local symbols="$check_dir/symbols.txt"
+  local present="$check_dir/present.txt"
+  rm -rf "$check_dir"; mkdir -p "$check_dir"
+
+  printf '%s\n' "$@" | sort -u > "$symbols"
+  nm -g "$dylib" 2>/dev/null \
+    | awk '$NF ~ /^_/ { print $NF }' \
+    | sort -u \
+    | grep -Fxf "$symbols" > "$present" || true
+
+  if [ -s "$present" ]; then
+    echo "$name: forbidden global symbol(s) present:" >&2
+    sed 's/^/  /' "$present" >&2
+    return 1
+  fi
+}
+
 # ---- per-slice build helpers (emit ONE dylib for the current platform) ----
 
 build_swift() {  # out source...
@@ -1328,12 +1348,103 @@ fetch_less_source() {
     "$LESS_SHA256" "$LESS_TARBALL"
 }
 
+write_less_termcap_shim() {  # path
+  cat > "$1" <<'EOF'
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+char mols_tc_pc;
+short mols_tc_speed;
+
+static char *mols_tc_copy(const char *value, char **area) {
+  size_t len;
+  char *dst;
+
+  if (value == NULL) return NULL;
+  if (area == NULL || *area == NULL) return (char *) value;
+  len = strlen(value) + 1;
+  dst = *area;
+  memcpy(dst, value, len);
+  *area += len;
+  return dst;
+}
+
+int mols_tc_ent(char *buffer, const char *name) {
+  (void) buffer;
+  (void) name;
+  return 1;
+}
+
+int mols_tc_flag(const char *id) {
+  if (id == NULL) return 0;
+  return strcmp(id, "am") == 0 || strcmp(id, "bs") == 0 || strcmp(id, "ut") == 0;
+}
+
+int mols_tc_num(const char *id) {
+  if (id == NULL) return -1;
+  if (strcmp(id, "li") == 0) return 24;
+  if (strcmp(id, "co") == 0) return 80;
+  if (strcmp(id, "sg") == 0) return 0;
+  return -1;
+}
+
+char *mols_tc_str(const char *id, char **area) {
+  if (id == NULL) return NULL;
+  if (strcmp(id, "cl") == 0) return mols_tc_copy("\033[H\033[2J", area);
+  if (strcmp(id, "ce") == 0) return mols_tc_copy("\033[K", area);
+  if (strcmp(id, "cd") == 0) return mols_tc_copy("\033[J", area);
+  if (strcmp(id, "cm") == 0) return mols_tc_copy("\033[%i%d;%dH", area);
+  if (strcmp(id, "ho") == 0) return mols_tc_copy("\033[H", area);
+  if (strcmp(id, "cr") == 0) return mols_tc_copy("\r", area);
+  if (strcmp(id, "bc") == 0 || strcmp(id, "kb") == 0) return mols_tc_copy("\b", area);
+  if (strcmp(id, "so") == 0 || strcmp(id, "md") == 0) return mols_tc_copy("\033[7m", area);
+  if (strcmp(id, "se") == 0 || strcmp(id, "me") == 0) return mols_tc_copy("\033[0m", area);
+  if (strcmp(id, "us") == 0) return mols_tc_copy("\033[4m", area);
+  if (strcmp(id, "ue") == 0) return mols_tc_copy("\033[24m", area);
+  if (strcmp(id, "mb") == 0) return mols_tc_copy("\033[5m", area);
+  if (strcmp(id, "vb") == 0) return mols_tc_copy("\007", area);
+  if (strcmp(id, "ku") == 0) return mols_tc_copy("\033[A", area);
+  if (strcmp(id, "kd") == 0) return mols_tc_copy("\033[B", area);
+  if (strcmp(id, "kr") == 0) return mols_tc_copy("\033[C", area);
+  if (strcmp(id, "kl") == 0) return mols_tc_copy("\033[D", area);
+  if (strcmp(id, "kP") == 0) return mols_tc_copy("\033[5~", area);
+  if (strcmp(id, "kN") == 0) return mols_tc_copy("\033[6~", area);
+  if (strcmp(id, "kh") == 0) return mols_tc_copy("\033[H", area);
+  if (strcmp(id, "@7") == 0) return mols_tc_copy("\033[F", area);
+  if (strcmp(id, "kD") == 0) return mols_tc_copy("\033[3~", area);
+  if (strcmp(id, "@8") == 0) return mols_tc_copy("\r", area);
+  if (strcmp(id, "ks") == 0 || strcmp(id, "ke") == 0) return mols_tc_copy("", area);
+  if (strcmp(id, "ti") == 0 || strcmp(id, "te") == 0) return mols_tc_copy("", area);
+  if (strcmp(id, "pc") == 0) return mols_tc_copy("", area);
+  return NULL;
+}
+
+char *mols_tc_go(const char *cm, int col, int row) {
+  static char buffer[32];
+  (void) cm;
+  snprintf(buffer, sizeof(buffer), "\033[%d;%dH", row + 1, col + 1);
+  return buffer;
+}
+
+int mols_tc_put(const char *str, int affcnt, int (*putc_fn)(int)) {
+  (void) affcnt;
+  if (str == NULL || putc_fn == NULL) return 0;
+  while (*str != '\0') {
+    putc_fn((unsigned char) *str);
+    ++str;
+  }
+  return 0;
+}
+EOF
+}
+
 build_less_slice() {  # out plat
   local out="$1"; local plat="$2"
   fetch_less_source
   curl_platform_vars "$plat"
 
-  local cc d src macsdk abi_parent
+  local cc d src macsdk abi_parent termcap_c termcap_o termcap_renames
   cc="$(xcrun -f clang)"
   d="$(dirname "$out")"
   abi_parent="$(microosabi_framework_parent "$plat")" || return 1
@@ -1344,18 +1455,27 @@ build_less_slice() {  # out plat
 
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/less-crt.o"
   "$cc" -c $target_flags -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/less-libc.o"
+  termcap_c="$d/less-termcap-shim.c"
+  termcap_o="$d/less-termcap-shim.o"
+  write_less_termcap_shim "$termcap_c"
+  "$cc" -c $target_flags -fPIC "$termcap_c" -o "$termcap_o"
+  termcap_renames="-Dtgetent=mols_tc_ent -Dtgetflag=mols_tc_flag -Dtgetnum=mols_tc_num -Dtgetstr=mols_tc_str -Dtgoto=mols_tc_go -Dtputs=mols_tc_put -DPC=mols_tc_pc -Dospeed=mols_tc_speed"
   (
     cd "$src"
     env \
       CC="$cc" \
-      CFLAGS="$target_flags -fPIC -I$INCLUDE -idirafter $macsdk/usr/include -include micro_os_crt.h -DREGEX_MALLOC=1" \
-      CPPFLAGS="-I$INCLUDE -idirafter $macsdk/usr/include" \
-      LDFLAGS="$target_flags -lncurses" \
+      CFLAGS="$target_flags -fPIC -I$INCLUDE -idirafter $macsdk/usr/include -include micro_os_crt.h -DREGEX_MALLOC=1 $termcap_renames" \
+      CPPFLAGS="-I$INCLUDE -idirafter $macsdk/usr/include $termcap_renames" \
+      LDFLAGS="$target_flags" \
+      LIBS="$termcap_o" \
       ./configure --host="$host" --with-regex=posix --with-secure
     make -j"${MAKE_JOBS:-2}" less \
-      LDFLAGS="$target_flags -dynamiclib -Wl,-alias,_main,_entry $d/less-crt.o $d/less-libc.o -F$abi_parent -framework MicroOSABI -lncurses"
+      LIBS="$termcap_o" \
+      LDFLAGS="$target_flags -dynamiclib -Wl,-alias,_main,_entry $d/less-crt.o $d/less-libc.o -F$abi_parent -framework MicroOSABI"
     cp -f less "$out"
   ) || return 1
+  validate_absent_global_symbols "$out" "less-$plat" \
+    _PC _ospeed _tgetent _tgetflag _tgetnum _tgetstr _tgoto _tputs
 }
 
 build_less_xcframework() {

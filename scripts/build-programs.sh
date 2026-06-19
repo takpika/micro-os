@@ -58,6 +58,7 @@ add_distribution_privacy_manifests() {
   # payload builds stay unchanged.
   add_privacy_manifest "$OUT/curl.xcframework/ios-arm64/curl.framework"
   add_privacy_manifest "$OUT/libcrypto.xcframework/ios-arm64/libcrypto.framework"
+  add_privacy_manifest "$OUT"
 }
 
 set_platform() {

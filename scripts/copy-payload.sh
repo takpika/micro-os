@@ -11,7 +11,8 @@ set -eu
 ROOT="${SRCROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 SOURCE_DIR="${PAYLOAD_DIR:-$ROOT/payload}"
 BUILT="${TARGET_BUILD_DIR:-$ROOT/.build}"
-RES_DIR="$BUILT/${UNLOCALIZED_RESOURCES_FOLDER_PATH:-Resources}/BundledDylibs"
+APP_RES_DIR="$BUILT/${UNLOCALIZED_RESOURCES_FOLDER_PATH:-Resources}"
+RES_DIR="$APP_RES_DIR/BundledDylibs"
 FW_DIR="$BUILT/${FRAMEWORKS_FOLDER_PATH:-Frameworks}"
 PLATFORM="${PLATFORM_NAME:-iphonesimulator}"
 
@@ -57,11 +58,16 @@ fi
 rsync -a --copy-unsafe-links \
   --exclude='*.xcframework' \
   --exclude='*.dylib' \
+  --exclude='PrivacyInfo.xcprivacy' \
   --exclude='.gitignore' \
   --exclude='.gitkeep' \
   --exclude='.DS_Store' \
   --exclude='README.md' \
   "$SOURCE_DIR"/ "$RES_DIR"/
+
+if [ -f "$SOURCE_DIR/PrivacyInfo.xcprivacy" ]; then
+  cp "$SOURCE_DIR/PrivacyInfo.xcprivacy" "$APP_RES_DIR/PrivacyInfo.xcprivacy"
+fi
 
 # 2. Embed each xcframework's matching slice (a .framework) into Frameworks/, then
 # code-sign it. Only our program frameworks are touched (others Xcode may have put

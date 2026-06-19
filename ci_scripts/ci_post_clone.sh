@@ -61,5 +61,8 @@ echo "==> micro-os CI: building demo programs ($DEMOS)"
 # shellcheck disable=SC2086  # intentional word-splitting into program names
 scripts/build-samples.sh $DEMOS
 
+echo "==> micro-os CI: adding distribution privacy manifests"
+scripts/build-programs.sh --add-distribution-privacy-manifests
+
 echo "==> micro-os CI: payload ready:"
 ls -1 payload

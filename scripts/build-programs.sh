@@ -8,6 +8,7 @@
 #   scripts/build-programs.sh                 # build every program
 #   scripts/build-programs.sh init wm         # only these
 #   scripts/build-programs.sh --list          # list available programs
+#   scripts/build-programs.sh --add-distribution-privacy-manifests
 #
 # Platforms (default both). Faster sim-only build:
 #   PLATFORMS=iphonesimulator scripts/build-programs.sh init
@@ -23,6 +24,41 @@ mkdir -p "$OUT" "$BUILD"
 PLATFORMS="${PLATFORMS:-iphoneos iphonesimulator}"
 CLANG_SDK=()
 SWIFT_SDK=()
+
+add_privacy_manifest() {
+  local framework="$1"
+  local manifest="$framework/PrivacyInfo.xcprivacy"
+
+  if [ ! -d "$framework" ]; then
+    echo "warning: privacy manifest target missing: $framework" >&2
+    return 0
+  fi
+
+  cat > "$manifest" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+</dict>
+</plist>
+PLIST
+}
+
+add_distribution_privacy_manifests() {
+  # App Store Connect currently flags these OpenSSL-containing payload frameworks
+  # for distribution builds. Keep this as an explicit opt-in so normal local
+  # payload builds stay unchanged.
+  add_privacy_manifest "$OUT/curl.xcframework/ios-arm64/curl.framework"
+  add_privacy_manifest "$OUT/libcrypto.xcframework/ios-arm64/libcrypto.framework"
+}
 
 set_platform() {
   case "$1" in
@@ -1652,6 +1688,9 @@ case "${GROUP:-all}" in
 esac
 
 if [ "${1:-}" = "--list" ]; then printf '%s\n' $GROUP_PROGRAMS; exit 0; fi
+if [ "${1:-}" = "--add-distribution-privacy-manifests" ]; then
+  add_distribution_privacy_manifests; exit $?
+fi
 # Regenerate payload/etc/setup-path from the already-built toybox slice, without
 # rebuilding toybox. Useful after changing the provisioning template.
 if [ "${1:-}" = "--write-setup-path" ]; then

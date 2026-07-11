@@ -37,7 +37,7 @@ struct icmphdr {
     } echo;
     unsigned int gateway;
     struct {
-      unsigned short __unused;
+      unsigned short __ununsed_frag;
       unsigned short mtu;
     } frag;
   } un;

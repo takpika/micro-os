@@ -301,8 +301,12 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
     # Network diagnostics we want available in the default userspace. These are
     # upstream toybox applets; /proc, /dev, and Linux-netlink based tools are
     # deliberately left out instead of faking platform data in the shim.
+    # PING/PING6 are NOT listed: toybox ping is Linux-only (IP_RECVTTL,
+    # struct icmphdr, millitime-based RTT). They will be pruned automatically
+    # by the compile-error sweep below. Apple's official network_cmds ping
+    # is built separately — see build_ping_xcframework.
     en(){ sed -i '' "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config; }
-    for applet in DIFF GZIP HOST MORE PING PING6 TELNET; do en "$applet"; done
+    for applet in DIFF GZIP HOST MORE TELNET; do en "$applet"; done
     sed -i '' 's/^CONFIG_IFCONFIG=y$/# CONFIG_IFCONFIG is not set/' .config
     sed -i '' 's/^CONFIG_IP=y$/# CONFIG_IP is not set/' .config
     # linux32 needs personality() — a Linux syscall absent on Apple platforms
@@ -1028,6 +1032,73 @@ build_ifconfig_xcframework() {
   rm -rf "$OUT/ifconfig.xcframework"
   xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/ifconfig.xcframework" >/dev/null
   echo "built ifconfig -> payload/ifconfig.xcframework ($PLATFORMS) [official Apple network_cmds $NETWORK_CMDS_VERSION, framework]"
+}
+
+# ---- ping: Apple network_cmds (BSD/Darwin), built without source patches ----
+# toybox ping is Linux-only (IP_RECVTTL, struct icmphdr, millitime-based RTT
+# truncated to unsigned short). Apple's official ping uses SOCK_DGRAM ICMP with
+# gettimeofday-based RTT (struct tv32, network byte order), which is correct on
+# Darwin. SO_TRAFFIC_CLASS is a private kernel API absent from the iOS SDK; stub
+# it to 0 — the traffic-class codepath becomes a harmless no-op setsockopt.
+
+build_ping_slice() {  # out plat
+  local out="$1"; local plat="$2"
+  fetch_network_cmds_sources
+
+  local sdk arch minv macsdk kern cc d src
+  sdk="$(xcrun --sdk "$plat" --show-sdk-path)"
+  cc="$(xcrun -f clang)"
+  if [ "$plat" = iphoneos ]; then
+    arch=arm64
+    minv="-miphoneos-version-min=15.0"
+  else
+    arch="$(uname -m)"
+    minv="-mios-simulator-version-min=15.0"
+  fi
+  macsdk="$(xcrun --sdk macosx --show-sdk-path)"
+  kern="$macsdk/System/Library/Frameworks/Kernel.framework/Versions/A/Headers"
+  d="$(dirname "$out")"
+  src="$BUILD/network_cmds/network_cmds-$plat-src"
+
+  rm -rf "$src"; mkdir -p "$src"
+  tar -xf "$NETWORK_CMDS_TARBALL" -C "$src" --strip-components 1
+
+  "$cc" -isysroot "$sdk" -arch "$arch" $minv -I "$INCLUDE" \
+    -c "$CRT/micro_os_crt.c" -o "$d/ping-crt.o"
+  "$cc" -isysroot "$sdk" -arch "$arch" $minv -I "$INCLUDE" \
+    -c "$CRT/micro_os_libc_shim.c" -o "$d/ping-libc.o"
+
+  local abi_parent
+  abi_parent="$(microosabi_framework_parent "$plat")" || return 1
+  local base_flags=(-isysroot "$sdk" -arch "$arch" $minv
+    -I "$INCLUDE"
+    -idirafter "$kern" -idirafter "$macsdk/usr/include")
+  local prog_flags=("${base_flags[@]}"
+    -Dmain=entry -include micro_os_crt.h
+    -DSO_TRAFFIC_CLASS=0 -Wno-deprecated-non-prototype)
+
+  "$cc" -c "${prog_flags[@]}" "$src/ping.tproj/ping.c" -o "$d/ping-ping.o"
+
+  "$cc" -dynamiclib -isysroot "$sdk" -arch "$arch" $minv \
+    "$d/ping-crt.o" "$d/ping-libc.o" "$d/ping-ping.o" \
+    -F "$abi_parent" -framework MicroOSABI -lm -o "$out"
+}
+
+build_ping_xcframework() {
+  fetch_network_cmds_sources || return 1
+  fws=()
+  for plat in $PLATFORMS; do
+    mkdir -p "$BUILD/$plat"
+    slice="$BUILD/$plat/ping.dylib"
+    echo "  building ping slice: $plat"
+    build_ping_slice "$slice" "$plat" || return 1
+    fw="$BUILD/$plat/ping.framework"
+    make_framework "$slice" "$fw" "ping" "$plat"
+    fws+=(-framework "$fw")
+  done
+  rm -rf "$OUT/ping.xcframework"
+  xcrun xcodebuild -create-xcframework "${fws[@]}" -output "$OUT/ping.xcframework" >/dev/null
+  echo "built ping -> payload/ping.xcframework ($PLATFORMS) [official Apple network_cmds $NETWORK_CMDS_VERSION, framework]"
 }
 
 # ---- zip/unzip: official Info-ZIP source, built without source patches ----
@@ -2183,6 +2254,7 @@ build_one() {
     gzip|more)             build_toybox_xcframework ;;
     curl)                  build_curl_xcframework ;;
     ifconfig)              build_ifconfig_xcframework ;;
+    ping)                  build_ping_xcframework ;;
     zip)                   build_infozip_xcframework zip build_zip_slice ;;
     unzip)                 build_infozip_xcframework unzip build_unzip_slice ;;
     zlib)                  build_zlib_xcframework ;;
@@ -2231,7 +2303,7 @@ done
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
 SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
 SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
-OPTIONAL_PROGRAMS="curl ifconfig bind-dns-tools zip unzip zlib xz bzip2 less awk traceroute whois uptime ps pkill fastfetch"
+OPTIONAL_PROGRAMS="curl ifconfig ping bind-dns-tools zip unzip zlib xz bzip2 less awk traceroute whois uptime ps pkill fastfetch"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
   samples) GROUP_PROGRAMS="$SAMPLE_PROGRAMS" ;;

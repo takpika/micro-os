@@ -301,14 +301,15 @@ build_toybox_slice() {  # out plat   -> writes a single-platform toybox.dylib
     # Network diagnostics we want available in the default userspace. These are
     # upstream toybox applets; /proc, /dev, and Linux-netlink based tools are
     # deliberately left out instead of faking platform data in the shim.
-    # PING/PING6 are NOT listed: toybox ping is Linux-only (IP_RECVTTL,
-    # struct icmphdr, millitime-based RTT). They will be pruned automatically
-    # by the compile-error sweep below. Apple's official network_cmds ping
-    # is built separately — see build_ping_xcframework.
+    # PING/PING6 are NOT listed: toybox ping is Linux-only (millitime-based
+    # RTT truncated to unsigned short — fixed 4110ms on Darwin). The shim
+    # headers make it compile, so it must be disabled explicitly. Apple's
+    # official network_cmds ping is built separately — see build_ping_xcframework.
     en(){ sed -i '' "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config; }
     for applet in DIFF GZIP HOST MORE TELNET; do en "$applet"; done
     sed -i '' 's/^CONFIG_IFCONFIG=y$/# CONFIG_IFCONFIG is not set/' .config
     sed -i '' 's/^CONFIG_IP=y$/# CONFIG_IP is not set/' .config
+    sed -i '' 's/^CONFIG_PING=y$/# CONFIG_PING is not set/' .config
     # linux32 needs personality() — a Linux syscall absent on Apple platforms
     # (macOS too). Disable it explicitly instead of shipping a command that can
     # only fail at runtime.

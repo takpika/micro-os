@@ -15,10 +15,22 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/payload"
-BUILD="$ROOT/.build/programs"
-INCLUDE="$ROOT/include"
-CRT="$ROOT/crt"
+
+# Autotools configure and CMake break when paths contain spaces (they split
+# unquoted $CPPFLAGS / $CMAKE_C_FLAGS on whitespace). Work around this by
+# creating a space-free symlink when the project lives under e.g. "iOS Apps".
+if [[ "$ROOT" == *" "* ]]; then
+  _BUILD_LINK="/tmp/micro-os-build-link"
+  ln -sfn "$ROOT" "$_BUILD_LINK"
+  _SAFE="$_BUILD_LINK"
+else
+  _SAFE="$ROOT"
+fi
+
+OUT="$_SAFE/payload"
+BUILD="$_SAFE/.build/programs"
+INCLUDE="$_SAFE/include"
+CRT="$_SAFE/crt"
 mkdir -p "$OUT" "$BUILD"
 
 PLATFORMS="${PLATFORMS:-iphoneos iphonesimulator}"
@@ -2030,17 +2042,17 @@ prepare_fastfetch_microos_sources() {  # src
   # The iOS SDK exposes the route socket headers only partially; do not fake
   # /proc-/netlink-style data. Report "no default route info" through a tiny
   # microOS shim while keeping upstream fastfetch sources unmodified.
-  FASTFETCH_NETIF_SHIM="$ROOT/crt/fastfetch_microos_netif.c" \
+  FASTFETCH_NETIF_SHIM="$_SAFE/crt/fastfetch_microos_netif.c" \
     perl -0pi -e 's#src/common/netif/netif_apple\.c#$ENV{FASTFETCH_NETIF_SHIM}#g' "$src/CMakeLists.txt"
-  FASTFETCH_DISPLAYSERVER_SHIM="$ROOT/crt/fastfetch_microos_displayserver.c" \
+  FASTFETCH_DISPLAYSERVER_SHIM="$_SAFE/crt/fastfetch_microos_displayserver.c" \
     perl -0pi -e 's#src/detection/displayserver/displayserver_apple\.c#$ENV{FASTFETCH_DISPLAYSERVER_SHIM}#g' "$src/CMakeLists.txt"
-  FASTFETCH_OPENGL_SHIM="$ROOT/crt/fastfetch_microos_opengl.c" \
+  FASTFETCH_OPENGL_SHIM="$_SAFE/crt/fastfetch_microos_opengl.c" \
     perl -0pi -e 's#src/detection/opengl/opengl_apple\.c#$ENV{FASTFETCH_OPENGL_SHIM}#g' "$src/CMakeLists.txt"
-  FASTFETCH_OPENCL_SHIM="$ROOT/crt/fastfetch_microos_opencl.c" \
+  FASTFETCH_OPENCL_SHIM="$_SAFE/crt/fastfetch_microos_opencl.c" \
     perl -0pi -e 's#src/detection/opencl/opencl\.c#$ENV{FASTFETCH_OPENCL_SHIM}#g' "$src/CMakeLists.txt"
-  FASTFETCH_KMOD_SHIM="$ROOT/crt/fastfetch_microos_kmod.c" \
+  FASTFETCH_KMOD_SHIM="$_SAFE/crt/fastfetch_microos_kmod.c" \
     perl -0pi -e 's#src/util/kmod\.c#$ENV{FASTFETCH_KMOD_SHIM}#g' "$src/CMakeLists.txt"
-  FASTFETCH_OSASCRIPT_SHIM="$ROOT/crt/fastfetch_microos_osascript.c" \
+  FASTFETCH_OSASCRIPT_SHIM="$_SAFE/crt/fastfetch_microos_osascript.c" \
     perl -0pi -e 's#^\s*src/util/apple/osascript\.m\s*$#$ENV{FASTFETCH_OSASCRIPT_SHIM}#mg' "$src/CMakeLists.txt"
   perl -0pi -e 's#src/detection/dns/dns_apple\.c#src/detection/dns/dns_linux.c#g' "$src/CMakeLists.txt"
   perl -0pi -e 's#src/detection/users/users_linux\.c#src/detection/users/users_nosupport.c#g' "$src/CMakeLists.txt"

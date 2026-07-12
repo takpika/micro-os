@@ -1,6 +1,7 @@
 #include "micro_os_gui_shim.h"
 #include "micro_os.h"
 
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,9 +10,23 @@
 #define GUI_MAX_WINDOWS 64
 #define GUI_MAX_EVENTS 64
 
-extern int32_t micro_os_gui_host_open_window(const char *title, const char *document, double width, double height);
-extern int32_t micro_os_gui_host_update_window(int32_t window_id, const char *document);
-extern int32_t micro_os_gui_host_close_window(int32_t window_id);
+static int32_t gui_host_open_window(const char *title, const char *document, double width, double height) {
+    typedef int32_t (*fn_t)(const char *, const char *, double, double);
+    fn_t fn = (fn_t)dlsym(RTLD_DEFAULT, "micro_os_gui_host_open_window");
+    return fn ? fn(title, document, width, height) : -1;
+}
+
+static int32_t gui_host_update_window(int32_t window_id, const char *document) {
+    typedef int32_t (*fn_t)(int32_t, const char *);
+    fn_t fn = (fn_t)dlsym(RTLD_DEFAULT, "micro_os_gui_host_update_window");
+    return fn ? fn(window_id, document) : -1;
+}
+
+static int32_t gui_host_close_window(int32_t window_id) {
+    typedef int32_t (*fn_t)(int32_t);
+    fn_t fn = (fn_t)dlsym(RTLD_DEFAULT, "micro_os_gui_host_close_window");
+    return fn ? fn(window_id) : -1;
+}
 
 typedef struct gui_buffer {
     char *bytes;
@@ -202,7 +217,7 @@ int micro_os_gui_window_show(micro_os_gui_window_t window) {
         return -1;
     }
 
-    entry->remote_id = micro_os_gui_host_open_window(
+    entry->remote_id = gui_host_open_window(
         entry->title,
         entry->document.bytes ? entry->document.bytes : "v1\n",
         entry->width,
@@ -218,7 +233,7 @@ int micro_os_gui_window_update(micro_os_gui_window_t window) {
         return -1;
     }
 
-    return micro_os_gui_host_update_window(
+    return gui_host_update_window(
         entry->remote_id,
         entry->document.bytes ? entry->document.bytes : "v1\n"
     );
@@ -230,7 +245,7 @@ int micro_os_gui_window_close(micro_os_gui_window_t window) {
         return -1;
     }
 
-    int result = micro_os_gui_host_close_window(entry->remote_id);
+    int result = gui_host_close_window(entry->remote_id);
     entry->shown = 0;
     return result;
 }

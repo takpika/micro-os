@@ -2134,14 +2134,13 @@ build_vcocoa() {  # out appsrc
   abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
-  xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
   xcrun clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     "$rt/micro_os_appkit_shim.m" -o "$d/appkit.o"
   xcrun clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     -Dmain=micro_os_appkit_user_main -include micro_os_crt.h "$appsrc" -o "$d/app.o"
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
     "$INCLUDE/MicroOS.swift" "$rt/VCocoaRuntime.swift" \
-    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/appkit.o" \
+    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/appkit.o" \
     -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
     -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
 	  -o "$out"
@@ -2151,14 +2150,10 @@ build_libvwin32() {  # out
   out="$1"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vwin32"
   local abi_parent
   abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
-  xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
-  xcrun clang -c -DMICRO_OS_WIN32_SHIM=1 "${CLANG_SDK[@]}" \
+  xcrun clang -dynamiclib -DMICRO_OS_WIN32_SHIM=1 "${CLANG_SDK[@]}" \
     -I "$INCLUDE" -I "$rt/include" \
-    "$rt/micro_os_win32_shim.c" -o "$d/win32.o"
-  xcrun clang -dynamiclib "${CLANG_SDK[@]}" \
-    "$d/gui.o" "$d/win32.o" \
+    "$rt/micro_os_win32_shim.c" \
     -F "$abi_parent" -framework MicroOSABI \
-    -Wl,-undefined,dynamic_lookup \
     -o "$out"
 }
 
@@ -2465,7 +2460,7 @@ build_one() {
     # against this framework, which the app loads globally at boot. On device dyld
     # won't resolve those flat-namespace symbols against the main executable, only
 	    # against loaded dylibs — so the ABI must live in one.
-	    MicroOSABI)            build_xcf MicroOSABI build_microosabi "$CRT/micro_os_abi.c" ;;
+	    MicroOSABI)            build_xcf MicroOSABI build_microosabi "$CRT/micro_os_abi.c" "$CRT/micro_os_gui_shim.c" ;;
 	    libvwin32)             build_xcf libvwin32 build_libvwin32 ;;
 	    wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;

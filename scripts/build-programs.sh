@@ -205,6 +205,11 @@ build_swift() {  # out source...
     -o "$out"
 }
 
+build_microosabi() {  # out source...  (the ABI dylib itself — no framework to link)
+  out="$1"; shift
+  xcrun clang -dynamiclib "${CLANG_SDK[@]}" -I "$INCLUDE" "$@" -o "$out"
+}
+
 build_c() {  # out source...  (plain C, no CRT shim; links the host ABI framework)
   out="$1"; shift
   local abi_parent
@@ -2266,7 +2271,7 @@ build_one() {
     # against this framework, which the app loads globally at boot. On device dyld
     # won't resolve those flat-namespace symbols against the main executable, only
 	    # against loaded dylibs — so the ABI must live in one.
-    MicroOSABI)            build_xcf MicroOSABI build_c "$CRT/micro_os_abi.c" ;;
+    MicroOSABI)            build_xcf MicroOSABI build_microosabi "$CRT/micro_os_abi.c" ;;
 	    wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
     gzip|more)             build_toybox_xcframework ;;

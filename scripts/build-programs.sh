@@ -598,12 +598,16 @@ build_openssl_dynamic() {  # plat prefix
   local ssl_dylib="$prefix/lib/libssl.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
   local crypto_dylib="$prefix/lib/libcrypto.$BIND_OPENSSL_DYLIB_SUFFIX.dylib"
   if [ -f "$ssl_dylib" ] && [ -f "$crypto_dylib" ]; then
-    xcrun install_name_tool -id "$BIND_LIBCRYPTO_INSTALL_NAME" "$crypto_dylib" 2>/dev/null || true
-    xcrun install_name_tool -id "$BIND_LIBSSL_INSTALL_NAME" "$ssl_dylib" 2>/dev/null || true
-    xcrun install_name_tool -change "$crypto_dylib" \
-      "$BIND_LIBCRYPTO_INSTALL_NAME" "$ssl_dylib" 2>/dev/null || true
-    xcrun install_name_tool -change "@rpath/libcrypto.framework/libcrypto" \
-      "$BIND_LIBCRYPTO_INSTALL_NAME" "$ssl_dylib" 2>/dev/null || true
+    for f in "$prefix/lib"/libcrypto*.dylib; do
+      xcrun install_name_tool -id "$BIND_LIBCRYPTO_INSTALL_NAME" "$f" 2>/dev/null || true
+    done
+    for f in "$prefix/lib"/libssl*.dylib; do
+      xcrun install_name_tool -id "$BIND_LIBSSL_INSTALL_NAME" "$f" 2>/dev/null || true
+      xcrun install_name_tool -change "$crypto_dylib" \
+        "$BIND_LIBCRYPTO_INSTALL_NAME" "$f" 2>/dev/null || true
+      xcrun install_name_tool -change "@rpath/libcrypto.framework/libcrypto" \
+        "$BIND_LIBCRYPTO_INSTALL_NAME" "$f" 2>/dev/null || true
+    done
     return 0
   fi
 
@@ -619,10 +623,14 @@ build_openssl_dynamic() {  # plat prefix
     mkdir -p "$prefix/include" "$prefix/lib"
     cp -R include/openssl "$prefix/include/"
     cp -f libssl*.dylib libcrypto*.dylib "$prefix/lib/"
-    xcrun install_name_tool -id "$BIND_LIBCRYPTO_INSTALL_NAME" "$crypto_dylib"
-    xcrun install_name_tool -id "$BIND_LIBSSL_INSTALL_NAME" "$ssl_dylib"
-    xcrun install_name_tool -change "$crypto_dylib" \
-      "$BIND_LIBCRYPTO_INSTALL_NAME" "$ssl_dylib"
+    for f in "$prefix/lib"/libcrypto*.dylib; do
+      xcrun install_name_tool -id "$BIND_LIBCRYPTO_INSTALL_NAME" "$f"
+    done
+    for f in "$prefix/lib"/libssl*.dylib; do
+      xcrun install_name_tool -id "$BIND_LIBSSL_INSTALL_NAME" "$f"
+      xcrun install_name_tool -change "$crypto_dylib" \
+        "$BIND_LIBCRYPTO_INSTALL_NAME" "$f"
+    done
   ) || return 1
 }
 
@@ -876,7 +884,9 @@ build_bind_dns_tools_slice_set() {  # plat product_dir
 
   # Build everything under a space-free directory — autoconf/make break on
   # paths containing spaces (e.g. "iOS Apps").
-  local bind_work="${TMPDIR:-/tmp}/micro-os-bind/$plat"
+  local _tmpbase="${TMPDIR:-/tmp}"
+  _tmpbase="${_tmpbase%/}"
+  local bind_work="$_tmpbase/micro-os-bind/$plat"
   rm -rf "$bind_work"
   mkdir -p "$bind_work"
 

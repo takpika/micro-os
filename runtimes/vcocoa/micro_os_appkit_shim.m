@@ -17,7 +17,6 @@
 #import <QuartzCore/QuartzCore.h>
 #import <AppKit/AppKit.h>
 #import "micro_os.h"
-#import "micro_os_gui_shim.h"
 
 #import <objc/runtime.h>
 #import <stdatomic.h>
@@ -33,7 +32,7 @@ extern void micro_os_vcocoa_set_window_title(int32_t windowID, const char *title
 extern void micro_os_vcocoa_set_window_permission(int32_t windowID, const char *key, int32_t enabled);
 extern void micro_os_vcocoa_set_fullscreen(int32_t windowID, int32_t on);
 
-static void MicroOSAppKitEmitView(micro_os_gui_window_t window, NSView *view);
+static void MicroOSAppKitEmitView(int32_t window, NSView *view);
 
 enum {
     MicroOSKeyboardPhaseKeyDown = 0,
@@ -996,7 +995,7 @@ void micro_os_appkit_toggle_soft_keyboard(void *surfaceView) {
     NSView *_contentView;
     NSRect _contentRect;
     NSWindowStyleMask _styleMask;
-    micro_os_gui_window_t _structuralWindow;
+    int32_t _structuralWindow;
     int32_t _surfaceWindowID;
     BOOL _mounted;
 }
@@ -1064,13 +1063,6 @@ void micro_os_appkit_toggle_soft_keyboard(void *surfaceView) {
         if (_surfaceWindowID >= 0 && !(_styleMask & NSWindowStyleMaskResizable)) {
             micro_os_vcocoa_set_window_permission(_surfaceWindowID, "Resize", 0);
         }
-    } else {
-        // Control app: emit a widget document and show it through the wm.
-        _structuralWindow = micro_os_gui_window_create(
-            self.title.UTF8String,
-            (double)_contentRect.size.width, (double)_contentRect.size.height);
-        MicroOSAppKitEmitView(_structuralWindow, _contentView);
-        micro_os_gui_window_show(_structuralWindow);
     }
 }
 
@@ -1086,38 +1078,9 @@ void micro_os_appkit_toggle_soft_keyboard(void *surfaceView) {
 }
 @end
 
-static void MicroOSAppKitEmitView(micro_os_gui_window_t window, NSView *view) {
-    if ([view isKindOfClass:[NSTextField class]]) {
-        micro_os_gui_window_add_text(window, ((NSTextField *)view).stringValue.UTF8String);
-        return;
-    }
-    if ([view isKindOfClass:[NSButton class]]) {
-        NSButton *button = (NSButton *)view;
-        NSString *controlID = [NSString stringWithFormat:@"button-%p", button];
-        MicroOSAppKitButtonsByID()[controlID] = button;
-        micro_os_gui_window_add_button(window, controlID.UTF8String, button.title.UTF8String);
-        return;
-    }
-    if ([view isKindOfClass:[NSBox class]] && ((NSBox *)view).boxType == NSBoxSeparator) {
-        micro_os_gui_window_add_divider(window);
-        return;
-    }
-    NSArray<NSView *> *children = nil;
-    if ([view respondsToSelector:@selector(microOSArrangedSubviews)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        children = [view performSelector:@selector(microOSArrangedSubviews)];
-#pragma clang diagnostic pop
-    }
-    if (children == nil && [view respondsToSelector:@selector(microOSSubviews)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        children = [view performSelector:@selector(microOSSubviews)];
-#pragma clang diagnostic pop
-    }
-    for (NSView *child in children) {
-        MicroOSAppKitEmitView(window, child);
-    }
+static void MicroOSAppKitEmitView(int32_t window, NSView *view) {
+    (void)window;
+    (void)view;
 }
 
 // ===========================================================================
@@ -1179,21 +1142,7 @@ static void MicroOSAppKitEmitView(micro_os_gui_window_t window, NSView *view) {
                 NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:period];
                 [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:deadline];
             } else {
-                // Control app: dispatch widget click events.
-                micro_os_gui_event event;
-                if (micro_os_gui_next_event(&event) == 0) {
-                    NSString *controlID = [NSString stringWithUTF8String:event.control];
-                    NSButton *button = MicroOSAppKitButtonsByID()[controlID];
-                    if (button && button.target && button.action &&
-                        [button.target respondsToSelector:button.action]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                        [button.target performSelector:button.action withObject:button];
-#pragma clang diagnostic pop
-                    }
-                } else {
-                    usleep(16000);
-                }
+                usleep(16000);
             }
         }
     }

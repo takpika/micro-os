@@ -2134,14 +2134,13 @@ build_vcocoa() {  # out appsrc
   abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
-  xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
   xcrun clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     "$rt/micro_os_appkit_shim.m" -o "$d/appkit.o"
   xcrun clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     -Dmain=micro_os_appkit_user_main -include micro_os_crt.h "$appsrc" -o "$d/app.o"
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
     "$INCLUDE/MicroOS.swift" "$rt/VCocoaRuntime.swift" \
-    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/appkit.o" \
+    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/appkit.o" \
     -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
     -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
 	  -o "$out"
@@ -2170,12 +2169,11 @@ build_vwin32() {  # out appsrc
   vwin32_parent="$(framework_parent libvwin32 "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
-  xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
   xcrun clang -c -DMICRO_OS_WIN32_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     -DWinMain=micro_os_win32_user_main -include micro_os_crt.h "$appsrc" -o "$d/app.o"
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
     "$rt/VWin32ProgramRuntime.swift" \
-    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" \
+    "$d/app.o" "$d/crt.o" "$d/libc.o" \
     -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
     -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
     -F "$vwin32_parent" -Xlinker -framework -Xlinker libvwin32 \
@@ -2279,7 +2277,6 @@ build_notepadpp() {  # out
 
   xcrun clang -c "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
-  xcrun clang -c "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
   local resource_dir="$d/$name.resources"
   rm -rf "$resource_dir"; mkdir -p "$resource_dir/vwin32-resources"
   local rc_compiler
@@ -2301,7 +2298,7 @@ build_notepadpp() {  # out
   xcrun clang++ -x c++ -c -DMICRO_OS_WIN32_SHIM=1 "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     "$rt/micro_os_win32_wmain_bridge.c" -o "$d/wmain-bridge.o"
   xcrun clang++ -c "${NPP_CLANG_SDK[@]}" "$rt/micro_os_cxx_filesystem_compat.cpp" -o "$d/cxx-filesystem-compat.o"
-  NPP_OBJECTS+=("$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/wmain-bridge.o" "$d/cxx-filesystem-compat.o")
+  NPP_OBJECTS+=("$d/crt.o" "$d/libc.o" "$d/wmain-bridge.o" "$d/cxx-filesystem-compat.o")
 
   local common_flags=(
     -std=c++20 -fdeclspec -fms-extensions

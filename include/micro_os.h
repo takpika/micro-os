@@ -85,21 +85,10 @@ int32_t micro_os_process_snapshot(micro_os_process_info_t *buffer, int32_t maxEn
 
 typedef int32_t (*micro_os_entry_fn)(int32_t argc, char **argv);
 typedef int32_t (*micro_os_wm_open_window_fn)(int32_t ownerPID, const char *title, void *retainedPlatformView, double width, double height);
-typedef void (*micro_os_wm_set_title_fn)(int32_t windowID, const char *title);
-typedef void (*micro_os_wm_set_permission_fn)(int32_t windowID, const char *key, int32_t enabled);
-typedef void (*micro_os_wm_close_handler_fn)(int32_t windowID, void *context);
-typedef void (*micro_os_wm_set_close_handler_fn)(int32_t windowID, micro_os_wm_close_handler_fn handler, void *context);
-typedef void (*micro_os_wm_set_fullscreen_fn)(int32_t windowID, int32_t enabled);
-typedef int32_t (*micro_os_wm_add_chrome_view_fn)(int32_t windowID, void *retainedViewBox);
 
 typedef struct micro_os_wm_service_table {
     int32_t version;
     micro_os_wm_open_window_fn openWindow;
-    micro_os_wm_set_title_fn setTitle;
-    micro_os_wm_set_permission_fn setPermission;
-    micro_os_wm_set_close_handler_fn setCloseHandler;
-    micro_os_wm_set_fullscreen_fn setFullscreen;
-    micro_os_wm_add_chrome_view_fn addChromeView;
 } micro_os_wm_service_table;
 
 #define MICRO_OS_WM_SERVICE_NAME "micro-os.wm.v1"

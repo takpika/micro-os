@@ -1,5 +1,6 @@
 #include "windows.h"
 #include "micro_os.h"
+#include "micro_os_gui_shim.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,7 @@ typedef struct win32_window {
     int control_id;
     HWND parent;
     WNDPROC proc;
-    int gui_window;
+    micro_os_gui_window_t gui_window;
     int quit_requested;
 } win32_window;
 
@@ -103,8 +104,36 @@ static int win32_is_builtin_control(const char *class_name) {
     return win32_strieq(class_name, "STATIC") || win32_strieq(class_name, "BUTTON");
 }
 
+static void win32_emit_child(micro_os_gui_window_t gui_window, win32_window *child) {
+    if (win32_strieq(child->class_name, "STATIC")) {
+        micro_os_gui_window_add_text(gui_window, child->title);
+        return;
+    }
+
+    if (win32_strieq(child->class_name, "BUTTON")) {
+        char control_id[64];
+        snprintf(control_id, sizeof(control_id), "win32-%d", child->control_id);
+        micro_os_gui_window_add_button(gui_window, control_id, child->title);
+    }
+}
+
 static void win32_show_top_level(win32_window *window) {
-    (void)window;
+    if (window->gui_window >= 0) {
+        return;
+    }
+
+    window->gui_window = micro_os_gui_window_create(window->title, 560, 360);
+    if (window->gui_window < 0) {
+        return;
+    }
+
+    for (int index = 0; index < WIN32_MAX_WINDOWS; index++) {
+        win32_window *child = &win32_windows[index];
+        if (child->in_use && child->parent == (HWND)window) {
+            win32_emit_child(window->gui_window, child);
+        }
+    }
+    micro_os_gui_window_show(window->gui_window);
 }
 
 static win32_window *win32_find_child_by_control(HWND parent, int control_id) {
@@ -215,6 +244,9 @@ BOOL DestroyWindow(HWND handle) {
     if (window->proc) {
         window->proc(handle, WM_DESTROY, 0, 0);
     }
+    if (window->gui_window >= 0) {
+        micro_os_gui_window_close(window->gui_window);
+    }
     window->in_use = 0;
     return TRUE;
 }
@@ -232,10 +264,38 @@ BOOL GetMessageA(MSG *message, HWND windowFilter, UINT messageFilterMin, UINT me
     }
 
     for (;;) {
+        micro_os_gui_event event;
+        int result = micro_os_gui_next_event(&event);
         if (win32_quit_requested) {
             return FALSE;
         }
-        usleep(16000);
+        if (result <= 0) {
+            usleep(16000);
+            continue;
+        }
+
+        if (strncmp(event.control, "win32-", 6) != 0) {
+            continue;
+        }
+
+        int control_id = atoi(event.control + 6);
+        for (int index = 0; index < WIN32_MAX_WINDOWS; index++) {
+            win32_window *top = &win32_windows[index];
+            if (!top->in_use || top->parent != NULL || top->gui_window != event.window) {
+                continue;
+            }
+
+            win32_window *child = win32_find_child_by_control((HWND)top, control_id);
+            if (!child) {
+                continue;
+            }
+
+            message->hwnd = (HWND)top;
+            message->message = WM_COMMAND;
+            message->wParam = MAKEWPARAM(control_id, BN_CLICKED);
+            message->lParam = (LPARAM)(HWND)child;
+            return TRUE;
+        }
     }
 }
 

@@ -96,6 +96,13 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     let loadedStem = (((dylibPath as NSString).deletingLastPathComponent as NSString)
         .lastPathComponent as NSString).deletingPathExtension
 
+    let dependencyFrameworks: [String: [String]] = [
+        "dig": ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"],
+        "nslookup": ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"],
+        "bzip2": ["libbz2"],
+        "xz": ["liblzma"],
+    ]
+
     let handle: UnsafeMutableRawPointer?
     var simulatorPreloadHandles: [UnsafeMutableRawPointer] = []
 #if targetEnvironment(simulator)
@@ -106,12 +113,6 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
     // let concurrent/sequential processes corrupt each other. A distinct on-disk
     // path defeats dyld's by-realpath image caching, giving fresh __DATA. The
     // simulator does not enforce code signing, so a copy in a writable dir runs.
-    let dependencyFrameworks: [String: [String]] = [
-        "dig": ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"],
-        "nslookup": ["libcrypto", "libssl", "libuv", "libisc", "libdns", "libisccfg", "libirs"],
-        "bzip2": ["libbz2"],
-        "xz": ["liblzma"],
-    ]
     let isolatedDeps = dependencyFrameworks[loadedStem] ?? []
     let needsIsolatedDeps = !isolatedDeps.isEmpty
     var simulatorLoadError: String?
@@ -234,14 +235,27 @@ let processMain: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPoi
         return nil
     }
 
-    // A reused pool slot's image still holds the previous process's globals (it
-    // can't be unloaded on device). Restore its pristine post-load __DATA so this
-    // process starts clean, exactly as a freshly loaded image would.
+    // iOS dyld keeps images mapped across dlclose, so every re-run of the same
+    // program (or its dependencies) inherits stale globals. Restore each image's
+    // pristine post-load __DATA before the new process runs.
 #if !targetEnvironment(simulator)
-    if poolOwned {
+    do {
         var dlinfo = Dl_info()
         if dladdr(symbol, &dlinfo) != 0 {
             micro_os_image_refresh(dlinfo.dli_fbase)
+        }
+        if let deps = dependencyFrameworks[stem] {
+            let depSet = Set(deps)
+            let imageCount = _dyld_image_count()
+            for i in 0..<imageCount {
+                guard let name = _dyld_get_image_name(i) else { continue }
+                let path = String(cString: name)
+                let imageStem = (((path as NSString).deletingLastPathComponent as NSString)
+                    .lastPathComponent as NSString).deletingPathExtension
+                if depSet.contains(imageStem), let hdr = _dyld_get_image_header(i) {
+                    micro_os_image_refresh(hdr)
+                }
+            }
         }
     }
 #endif

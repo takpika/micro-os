@@ -29,18 +29,25 @@ enum MicroOSKeyboardEventPhase: Int32 {
 }
 
 struct MicroOSKeyboardEvent {
+    let phase: MicroOSKeyboardEventPhase
     let key: MicroOSKeyboardKey
     let modifiers: MicroOSKeyboardModifiers
     let text: String
 
-    init(key: MicroOSKeyboardKey, modifiers: MicroOSKeyboardModifiers = [], text: String = "") {
+    init(
+        phase: MicroOSKeyboardEventPhase = .keyDown,
+        key: MicroOSKeyboardKey,
+        modifiers: MicroOSKeyboardModifiers = [],
+        text: String = ""
+    ) {
+        self.phase = phase
         self.key = key
         self.modifiers = modifiers
         self.text = text
     }
 }
 
-public typealias MicroOSKeyboardSinkCallback = @convention(c) (
+public typealias MicroOSKeyboardDeviceCallback = @convention(c) (
     Int32,
     Int32,
     UInt32,
@@ -48,8 +55,9 @@ public typealias MicroOSKeyboardSinkCallback = @convention(c) (
     UnsafeMutableRawPointer?
 ) -> Void
 
-struct MicroOSKeyboardSink {
-    let callback: MicroOSKeyboardSinkCallback
+struct MicroOSKeyboardDeviceSubscriber {
+    let pid: Int32
+    let callback: MicroOSKeyboardDeviceCallback
     let context: UnsafeMutableRawPointer?
 }
 

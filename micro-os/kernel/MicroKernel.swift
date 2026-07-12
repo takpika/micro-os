@@ -10,11 +10,12 @@ final class MicroKernel: ObservableObject {
 
     private var nextPID: Int32 = 100
     private var nextTTYID: Int32 = 0
+    private var nextKeyboardSubscriberID: Int32 = 0
     private var processes: [Int32: ProcessControlBlock] = [:]
     private var pttys: [Int32: PseudoTTY] = [:]
-    private var nextKeyboardSinkID: Int32 = 0
-    private var keyboardSinks: [Int32: MicroOSKeyboardSink] = [:]
+    private var keyboardSubscribers: [Int32: MicroOSKeyboardDeviceSubscriber] = [:]
     private var initialProcessPID: Int32?
+    private var ttyForegroundPGID: [Int32: Int32] = [:]
     private let ansiParser = ANSIConsoleParser()
     private let defaultTTY: PseudoTTY
     private let homeDirectory: String
@@ -136,7 +137,11 @@ final class MicroKernel: ObservableObject {
     }
 
     func readStdin(pid: Int32, maxBytes: Int) -> String {
-        if let ttyID = processes[pid]?.ttyID, ttyID != defaultTTY.id {
+        let ttyID = processes[pid]?.ttyID ?? defaultTTY.id
+        if ttyForegroundPGID[ttyID] == nil, let pgid = processes[pid]?.pgid {
+            ttyForegroundPGID[ttyID] = pgid
+        }
+        if ttyID != defaultTTY.id {
             return pttys[ttyID]?.read(maxBytes: maxBytes) ?? ""
         }
         return defaultTTY.read(maxBytes: maxBytes)
@@ -156,9 +161,34 @@ final class MicroKernel: ObservableObject {
         }
     }
 
-    func enqueueKeyboardInput(_ event: MicroOSKeyboardEvent) {
+    func enqueueHardwareKeyboardInput(_ event: MicroOSKeyboardEvent) {
+        if !keyboardSubscribers.isEmpty {
+            for subscriber in keyboardSubscribers.values {
+                event.text.withCString { pointer in
+                    subscriber.callback(
+                        event.phase.rawValue,
+                        event.key.rawValue,
+                        event.modifiers.rawValue,
+                        pointer,
+                        subscriber.context
+                    )
+                }
+            }
+            return
+        }
+
         guard let text = MicroOSKeyboardTTYTranslator.text(for: event) else { return }
         enqueueStdin(text)
+    }
+
+    func subscribeKeyboardDevice(pid: Int32, callback: @escaping MicroOSKeyboardDeviceCallback, context: UnsafeMutableRawPointer?) -> Int32 {
+        nextKeyboardSubscriberID += 1
+        keyboardSubscribers[nextKeyboardSubscriberID] = MicroOSKeyboardDeviceSubscriber(pid: pid, callback: callback, context: context)
+        return nextKeyboardSubscriberID
+    }
+
+    func unsubscribeKeyboardDevice(id: Int32) {
+        keyboardSubscribers.removeValue(forKey: id)
     }
 
     func createPseudoTTY(name: String) -> Int32 {
@@ -196,29 +226,6 @@ final class MicroKernel: ObservableObject {
     func enqueuePseudoTTYKeyboardInput(id: Int32, event: MicroOSKeyboardEvent) {
         guard let text = MicroOSKeyboardTTYTranslator.text(for: event) else { return }
         enqueuePseudoTTYInput(id: id, text: text)
-    }
-
-    func registerKeyboardSink(callback: @escaping MicroOSKeyboardSinkCallback, context: UnsafeMutableRawPointer?) -> Int32 {
-        nextKeyboardSinkID += 1
-        keyboardSinks[nextKeyboardSinkID] = MicroOSKeyboardSink(callback: callback, context: context)
-        return nextKeyboardSinkID
-    }
-
-    func unregisterKeyboardSink(id: Int32) {
-        keyboardSinks.removeValue(forKey: id)
-    }
-
-    func dispatchKeyboardEvent(sinkID: Int32, phase: MicroOSKeyboardEventPhase, event: MicroOSKeyboardEvent) {
-        guard let sink = keyboardSinks[sinkID] else { return }
-        event.text.withCString { pointer in
-            sink.callback(
-                phase.rawValue,
-                event.key.rawValue,
-                event.modifiers.rawValue,
-                pointer,
-                sink.context
-            )
-        }
     }
 
     func ttyLocalFlags(pid: Int32) -> UInt32 {
@@ -284,8 +291,15 @@ final class MicroKernel: ObservableObject {
         guard let process = processes.removeValue(forKey: pid) else { return }
         process.exitCode = code
         overlays.removeAll { $0.pid == pid }
+        keyboardSubscribers = keyboardSubscribers.filter { $0.value.pid != pid }
         for tty in pttys.values {
             tty.removeObservers(pid: pid)
+        }
+        if ttyForegroundPGID[process.ttyID] == process.pgid {
+            let groupStillAlive = processes.values.contains { $0.pgid == process.pgid && $0.ttyID == process.ttyID }
+            if !groupStillAlive {
+                ttyForegroundPGID[process.ttyID] = nil
+            }
         }
         HostABI.shared.notifyProcessExit(pid: pid)
         if initialProcessPID == pid {
@@ -342,6 +356,7 @@ final class MicroKernel: ObservableObject {
                 KernelProcessInfo(
                     pid: $0.pid,
                     parentPID: $0.parentPID,
+                    pgid: $0.pgid,
                     ttyID: $0.ttyID,
                     startTime: $0.startTime,
                     argv: $0.argv
@@ -447,12 +462,52 @@ final class MicroKernel: ObservableObject {
     }
 
     private func interruptTTY(id: Int32) {
-        let candidates = processes.values
-            .filter { $0.ttyID == id && $0.pid != initialProcessPID }
-            .sorted { $0.pid < $1.pid }
-        guard let pid = candidates.last?.pid else { return }
-        log(.system, "tty\(id): interrupt pid=\(pid)")
-        HostABI.shared.requestTermination(pid: pid)
+        guard let fgPGID = ttyForegroundPGID[id] else { return }
+        let sigintBit: UInt64 = 1 << UInt64(SIGINT)
+        let targets = processes.values.filter { pcb in
+            pcb.ttyID == id && pcb.pid != initialProcessPID && pcb.pgid == fgPGID
+        }
+        for pcb in targets {
+            if pcb.signalIgnoreMask & sigintBit != 0 {
+                continue
+            }
+            log(.system, "tty\(id): interrupt pid=\(pcb.pid) pgid=\(pcb.pgid)")
+            HostABI.shared.requestTermination(pid: pcb.pid)
+            if let thread = pcb.thread {
+                pthread_kill(thread, SIGURG)
+            }
+        }
+    }
+
+    func setProcessGroup(pid: Int32, pgid: Int32) -> Bool {
+        guard let pcb = processes[pid] else { return false }
+        pcb.pgid = pgid == 0 ? pid : pgid
+        return true
+    }
+
+    func getProcessGroup(pid: Int32) -> Int32 {
+        guard let pcb = processes[pid] else { return -1 }
+        return pcb.pgid
+    }
+
+    func setForegroundProcessGroup(ttyID: Int32, pgid: Int32) -> Bool {
+        ttyForegroundPGID[ttyID] = pgid
+        return true
+    }
+
+    func getForegroundProcessGroup(ttyID: Int32) -> Int32 {
+        ttyForegroundPGID[ttyID] ?? -1
+    }
+
+    func setSignalIgnored(pid: Int32, signal: Int32, ignored: Bool) -> Bool {
+        guard signal > 0 && signal < 64, let pcb = processes[pid] else { return false }
+        let bit: UInt64 = 1 << UInt64(signal)
+        if ignored {
+            pcb.signalIgnoreMask |= bit
+        } else {
+            pcb.signalIgnoreMask &= ~bit
+        }
+        return true
     }
 
     private func log(_ stream: TTYStream, _ text: String) {

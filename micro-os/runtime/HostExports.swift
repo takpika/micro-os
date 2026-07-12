@@ -112,6 +112,30 @@ public func micro_os_ptty_key_input(
     HostABI.shared.enqueuePseudoTTYKeyboardInput(id: id, key: key, modifiers: modifiers, text: string(from: text))
 }
 
+@_cdecl("micro_os_keyboard_device_input")
+public func micro_os_keyboard_device_input(
+    _ phase: Int32,
+    _ key: Int32,
+    _ modifiers: UInt32,
+    _ text: UnsafePointer<CChar>?
+) {
+    HostABI.shared.enqueueHardwareKeyboardInput(phase: phase, key: key, modifiers: modifiers, text: string(from: text))
+}
+
+@_cdecl("micro_os_keyboard_device_subscribe")
+public func micro_os_keyboard_device_subscribe(
+    _ callback: MicroOSKeyboardDeviceCallback?,
+    _ context: UnsafeMutableRawPointer?
+) -> Int32 {
+    guard let callback else { return -1 }
+    return HostABI.shared.subscribeKeyboardDevice(callback: callback, context: context)
+}
+
+@_cdecl("micro_os_keyboard_device_unsubscribe")
+public func micro_os_keyboard_device_unsubscribe(_ subscriptionID: Int32) {
+    HostABI.shared.unsubscribeKeyboardDevice(id: subscriptionID)
+}
+
 @_cdecl("micro_os_ptty_read")
 public func micro_os_ptty_read(_ id: Int32, _ buffer: UnsafeMutablePointer<CChar>?, _ maxBytes: Int32) -> Int32 {
     guard let buffer, maxBytes > 0 else { return 0 }
@@ -124,37 +148,6 @@ public func micro_os_ptty_read(_ id: Int32, _ buffer: UnsafeMutablePointer<CChar
         buffer[bytes.count] = 0
     }
     return Int32(bytes.count)
-}
-
-@_cdecl("micro_os_keyboard_sink_register")
-public func micro_os_keyboard_sink_register(
-    _ callback: MicroOSKeyboardSinkCallback?,
-    _ context: UnsafeMutableRawPointer?
-) -> Int32 {
-    guard let callback else { return -1 }
-    return HostABI.shared.registerKeyboardSink(callback: callback, context: context)
-}
-
-@_cdecl("micro_os_keyboard_sink_unregister")
-public func micro_os_keyboard_sink_unregister(_ sinkID: Int32) {
-    HostABI.shared.unregisterKeyboardSink(id: sinkID)
-}
-
-@_cdecl("micro_os_keyboard_dispatch")
-public func micro_os_keyboard_dispatch(
-    _ sinkID: Int32,
-    _ phase: Int32,
-    _ key: Int32,
-    _ modifiers: UInt32,
-    _ text: UnsafePointer<CChar>?
-) {
-    HostABI.shared.dispatchKeyboardEvent(
-        sinkID: sinkID,
-        phase: phase,
-        key: key,
-        modifiers: modifiers,
-        text: string(from: text)
-    )
 }
 
 @_cdecl("micro_os_ptty_observe_output")
@@ -201,6 +194,37 @@ public func micro_os_process_signal(_ pid: Int32, _ signal: Int32) -> Int32 {
     HostABI.shared.signal(pid: pid, signal: signal) ? 0 : -1
 }
 
+@_cdecl("micro_os_signal_set_ignored")
+public func micro_os_signal_set_ignored(_ pid: Int32, _ signal: Int32, _ ignored: Int32) -> Int32 {
+    let targetPID = pid == 0 ? HostABI.shared.currentPID() : pid
+    return HostABI.shared.setSignalIgnored(pid: targetPID, signal: signal, ignored: ignored != 0) ? 0 : -1
+}
+
+@_cdecl("micro_os_setpgid")
+public func micro_os_setpgid(_ pid: Int32, _ pgid: Int32) -> Int32 {
+    let targetPID = pid == 0 ? HostABI.shared.currentPID() : pid
+    let targetPGID = pgid == 0 ? targetPID : pgid
+    return HostABI.shared.setProcessGroup(pid: targetPID, pgid: targetPGID) ? 0 : -1
+}
+
+@_cdecl("micro_os_getpgid")
+public func micro_os_getpgid(_ pid: Int32) -> Int32 {
+    let targetPID = pid == 0 ? HostABI.shared.currentPID() : pid
+    return HostABI.shared.getProcessGroup(pid: targetPID)
+}
+
+@_cdecl("micro_os_tcsetpgrp")
+public func micro_os_tcsetpgrp(_ fd: Int32, _ pgid: Int32) -> Int32 {
+    let ttyID = HostABI.shared.currentTTYID()
+    return HostABI.shared.setForegroundProcessGroup(ttyID: ttyID, pgid: pgid) ? 0 : -1
+}
+
+@_cdecl("micro_os_tcgetpgrp")
+public func micro_os_tcgetpgrp(_ fd: Int32) -> Int32 {
+    let ttyID = HostABI.shared.currentTTYID()
+    return HostABI.shared.getForegroundProcessGroup(ttyID: ttyID)
+}
+
 @_cdecl("micro_os_process_snapshot")
 public func micro_os_process_snapshot(_ buffer: UnsafeMutableRawPointer?, _ maxEntries: Int32) -> Int32 {
     let snapshot = HostABI.shared.processSnapshot()
@@ -208,18 +232,19 @@ public func micro_os_process_snapshot(_ buffer: UnsafeMutableRawPointer?, _ maxE
         return Int32(snapshot.count)
     }
 
-    let entrySize = 344
+    let entrySize = 352
     let count = min(snapshot.count, Int(maxEntries))
     for (index, process) in snapshot.prefix(count).enumerated() {
         let base = buffer.advanced(by: index * entrySize)
         base.storeBytes(of: process.pid, toByteOffset: 0, as: Int32.self)
         base.storeBytes(of: process.parentPID, toByteOffset: 4, as: Int32.self)
-        base.storeBytes(of: process.ttyID, toByteOffset: 8, as: Int32.self)
-        base.storeBytes(of: Int32(2), toByteOffset: 12, as: Int32.self)
+        base.storeBytes(of: process.pgid, toByteOffset: 8, as: Int32.self)
+        base.storeBytes(of: process.ttyID, toByteOffset: 12, as: Int32.self)
+        base.storeBytes(of: Int32(2), toByteOffset: 16, as: Int32.self)
         let startMS = UInt64(max(0, process.startTime.timeIntervalSince1970 * 1000))
-        base.storeBytes(of: startMS, toByteOffset: 16, as: UInt64.self)
-        writeCString(process.command, to: base.advanced(by: 24), capacity: 64)
-        writeArgv(process.argv, to: base.advanced(by: 88), capacity: 256)
+        base.storeBytes(of: startMS, toByteOffset: 24, as: UInt64.self)
+        writeCString(process.command, to: base.advanced(by: 32), capacity: 64)
+        writeArgv(process.argv, to: base.advanced(by: 96), capacity: 256)
     }
     return Int32(snapshot.count)
 }

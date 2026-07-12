@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -252,6 +253,27 @@ static sysctlbyname_fn_t host_sysctlbyname_fn(void) {
         fn = (sysctlbyname_fn_t)dlsym(RTLD_NEXT, "sysctlbyname");
     }
     return fn;
+}
+
+static void shim_sigurg_handler(int sig) {
+    (void)sig;
+    if (micro_os_process_termination_requested()) {
+        micro_os_process_exit(128 + SIGINT);
+    }
+}
+
+__attribute__((constructor))
+static void shim_install_sigurg_handler(void) {
+    typedef int (*real_sigaction_fn)(int, const struct sigaction *, struct sigaction *);
+    real_sigaction_fn real_sa = (real_sigaction_fn)dlsym(RTLD_NEXT, "sigaction");
+    if (real_sa) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = shim_sigurg_handler;
+        sa.sa_flags = 0;
+        sigemptyset(&sa.sa_mask);
+        real_sa(SIGURG, &sa, NULL);
+    }
 }
 
 static pthread_mutex_t shim_signal_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -652,9 +674,9 @@ static void shim_fill_kinfo_proc(struct kinfo_proc *kp, const micro_os_process_i
     snprintf(kp->kp_proc.p_comm, sizeof(kp->kp_proc.p_comm), "%s", info->command[0] ? info->command : "process");
 
     kp->kp_eproc.e_ppid = (pid_t)info->parent_pid;
-    kp->kp_eproc.e_pgid = (pid_t)(info->parent_pid > 0 ? info->parent_pid : info->pid);
+    kp->kp_eproc.e_pgid = (pid_t)info->pgid;
     kp->kp_eproc.e_tdev = (dev_t)info->tty_id;
-    kp->kp_eproc.e_tpgid = (pid_t)kp->kp_eproc.e_pgid;
+    kp->kp_eproc.e_tpgid = (pid_t)info->pgid;
     kp->kp_eproc.e_pcred.p_ruid = getuid();
     kp->kp_eproc.e_pcred.p_svuid = getuid();
     kp->kp_eproc.e_pcred.p_rgid = getgid();
@@ -842,6 +864,50 @@ int kill(pid_t pid, int sig) {
         return -1;
     }
     return fn(pid, sig);
+}
+
+pid_t setpgid(pid_t pid, pid_t pgid) {
+    return (pid_t)micro_os_setpgid((int32_t)pid, (int32_t)pgid);
+}
+
+pid_t getpgid(pid_t pid) {
+    return (pid_t)micro_os_getpgid((int32_t)pid);
+}
+
+pid_t getpgrp(void) {
+    return getpgid(0);
+}
+
+int tcsetpgrp(int fd, pid_t pgid) {
+    return (int)micro_os_tcsetpgrp((int32_t)fd, (int32_t)pgid);
+}
+
+pid_t tcgetpgrp(int fd) {
+    return (pid_t)micro_os_tcgetpgrp((int32_t)fd);
+}
+
+pid_t setsid(void) {
+    int32_t pid = micro_os_pid();
+    micro_os_setpgid(pid, pid);
+    return (pid_t)pid;
+}
+
+sig_t signal(int sig, sig_t handler) {
+    micro_os_signal_set_ignored(0, (int32_t)sig, handler == SIG_IGN ? 1 : 0);
+    return SIG_DFL;
+}
+
+int sigaction(int sig, const struct sigaction *restrict act, struct sigaction *restrict oact) {
+    if (oact) {
+        oact->sa_handler = SIG_DFL;
+        oact->sa_flags = 0;
+        sigemptyset(&oact->sa_mask);
+    }
+    if (act) {
+        int ignored = (act->sa_handler == SIG_IGN) ? 1 : 0;
+        micro_os_signal_set_ignored(0, (int32_t)sig, ignored);
+    }
+    return 0;
 }
 
 int sigwait(const sigset_t *set, int *sig) {
@@ -1357,13 +1423,28 @@ int tcsetattr(int fd, int optional_actions, const struct termios *termios_p) {
     return -1;
 }
 
+static _Thread_local jmp_buf fork_jmp_buf;
+static _Thread_local int32_t fork_child_pid = -1;
+static _Thread_local int fork_in_child = 0;
+
 pid_t fork(void) {
     int32_t child_pid = micro_os_fork();
-    if (child_pid > 0) {
-        micro_os_exit_forked_child(child_pid, 127);
+    if (child_pid <= 0) {
+        errno = ENOSYS;
+        return -1;
     }
-    errno = ENOSYS;
-    return -1;
+
+    fork_child_pid = child_pid;
+
+    if (setjmp(fork_jmp_buf) == 0) {
+        fork_in_child = 1;
+        micro_os_fork_child_begin(child_pid);
+        return 0;
+    } else {
+        fork_in_child = 0;
+        fork_child_pid = -1;
+        return child_pid;
+    }
 }
 
 pid_t vfork(void) {
@@ -1468,6 +1549,16 @@ int execv(const char *path, char *const argv[]) {
         errno = ENOENT;
         return -1;
     }
+
+    if (fork_in_child && fork_child_pid > 0) {
+        int32_t cpid = fork_child_pid;
+        micro_os_fork_child_end();
+        micro_os_exec_forked_child(cpid, dylib, (int32_t)argc, (char **)argv);
+        fork_in_child = 0;
+        longjmp(fork_jmp_buf, 1);
+        __builtin_unreachable();
+    }
+
     int32_t pid = micro_os_spawn(dylib, (int32_t)argc, (char **)argv);
     if (pid < 0) {
         errno = ENOENT;
@@ -1557,14 +1648,30 @@ pid_t wait(int *status) {
 }
 
 void exit(int status) {
+    if (fork_in_child && fork_child_pid > 0) {
+        int32_t cpid = fork_child_pid;
+        micro_os_fork_child_end();
+        micro_os_exit_forked_child(cpid, (int32_t)status);
+        fork_in_child = 0;
+        longjmp(fork_jmp_buf, 1);
+        __builtin_unreachable();
+    }
     fflush(NULL);
     micro_os_process_exit((int32_t)status);
 }
 
 void _exit(int status) {
+    if (fork_in_child && fork_child_pid > 0) {
+        int32_t cpid = fork_child_pid;
+        micro_os_fork_child_end();
+        micro_os_exit_forked_child(cpid, (int32_t)status);
+        fork_in_child = 0;
+        longjmp(fork_jmp_buf, 1);
+        __builtin_unreachable();
+    }
     micro_os_process_exit((int32_t)status);
 }
 
 void _Exit(int status) {
-    micro_os_process_exit((int32_t)status);
+    _exit(status);
 }

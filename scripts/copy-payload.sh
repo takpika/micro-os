@@ -49,6 +49,26 @@ if [ ! -d "$SOURCE_DIR" ]; then
   exit 0
 fi
 
+# Drop program frameworks that were embedded by an older payload but no longer
+# exist in the current payload. Leave Xcode/SwiftPM frameworks alone.
+for fw in "$FW_DIR"/*.framework; do
+  [ -d "$fw" ] || continue
+  name="$(basename "$fw" .framework)"
+  base="$name"
+  case "$name" in
+    *-pool-*) base="${name%%-pool-*}" ;;
+  esac
+  bundle_id=""
+  if [ -f "$fw/Info.plist" ]; then
+    bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$fw/Info.plist" 2>/dev/null || true)"
+  fi
+  case "$bundle_id" in
+    jp.takpika.micro-os.prog.*)
+      [ -d "$SOURCE_DIR/$base.xcframework" ] || rm -rf "$fw"
+      ;;
+  esac
+done
+
 # 1. Mirror non-code payload files (etc/, data, …) into BundledDylibs. xcframeworks
 # (handled below) and bare dylibs (not allowed in the bundle) are excluded.
 # --copy-unsafe-links: a payload entry that is a symlink pointing OUTSIDE the

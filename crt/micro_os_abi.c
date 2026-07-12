@@ -51,19 +51,19 @@ void micro_os_ptty_input(int32_t id, const char *t) { ((void(*)(int32_t,const ch
 void micro_os_ptty_key_input(int32_t id, int32_t key, uint32_t modifiers, const char *text) {
     ((void(*)(int32_t,int32_t,uint32_t,const char*))IMPL(micro_os_ptty_key_input))(id,key,modifiers,text);
 }
+void micro_os_keyboard_device_input(int32_t phase, int32_t key, uint32_t modifiers, const char *text) {
+    ((void(*)(int32_t,int32_t,uint32_t,const char*))IMPL(micro_os_keyboard_device_input))(phase,key,modifiers,text);
+}
 int32_t micro_os_ptty_read(int32_t id, char *b, int32_t n) { return ((int32_t(*)(int32_t,char*,int32_t))IMPL(micro_os_ptty_read))(id,b,n); }
 void micro_os_ptty_observe_output(int32_t id, void (*cb)(int32_t,const char*,void*), void *ctx) {
     ((void(*)(int32_t,void(*)(int32_t,const char*,void*),void*))IMPL(micro_os_ptty_observe_output))(id,cb,ctx);
 }
 
-int32_t micro_os_keyboard_sink_register(void (*cb)(int32_t,int32_t,uint32_t,const char*,void*), void *ctx) {
-    return ((int32_t(*)(void(*)(int32_t,int32_t,uint32_t,const char*,void*),void*))IMPL(micro_os_keyboard_sink_register))(cb,ctx);
+int32_t micro_os_keyboard_device_subscribe(void (*cb)(int32_t,int32_t,uint32_t,const char*,void*), void *ctx) {
+    return ((int32_t(*)(void(*)(int32_t,int32_t,uint32_t,const char*,void*),void*))IMPL(micro_os_keyboard_device_subscribe))(cb,ctx);
 }
-void micro_os_keyboard_sink_unregister(int32_t id) {
-    ((void(*)(int32_t))IMPL(micro_os_keyboard_sink_unregister))(id);
-}
-void micro_os_keyboard_dispatch(int32_t id, int32_t phase, int32_t key, uint32_t modifiers, const char *text) {
-    ((void(*)(int32_t,int32_t,int32_t,uint32_t,const char*))IMPL(micro_os_keyboard_dispatch))(id,phase,key,modifiers,text);
+void micro_os_keyboard_device_unsubscribe(int32_t id) {
+    ((void(*)(int32_t))IMPL(micro_os_keyboard_device_unsubscribe))(id);
 }
 
 uint32_t micro_os_tty_get_lflag(void) { return ((uint32_t(*)(void))IMPL(micro_os_tty_get_lflag))(); }
@@ -73,6 +73,11 @@ void micro_os_process_keep_alive(void) { ((void(*)(void))IMPL(micro_os_process_k
 int32_t micro_os_process_termination_requested(void) { return ((int32_t(*)(void))IMPL(micro_os_process_termination_requested))(); }
 void micro_os_process_exit(int32_t code) { ((void(*)(int32_t))IMPL(micro_os_process_exit))(code); __builtin_unreachable(); }
 int32_t micro_os_process_signal(int32_t pid, int32_t sig) { return ((int32_t(*)(int32_t,int32_t))IMPL(micro_os_process_signal))(pid,sig); }
+int32_t micro_os_signal_set_ignored(int32_t pid, int32_t sig, int32_t ignored) { return ((int32_t(*)(int32_t,int32_t,int32_t))IMPL(micro_os_signal_set_ignored))(pid,sig,ignored); }
+int32_t micro_os_setpgid(int32_t pid, int32_t pgid) { return ((int32_t(*)(int32_t,int32_t))IMPL(micro_os_setpgid))(pid,pgid); }
+int32_t micro_os_getpgid(int32_t pid) { return ((int32_t(*)(int32_t))IMPL(micro_os_getpgid))(pid); }
+int32_t micro_os_tcsetpgrp(int32_t fd, int32_t pgid) { return ((int32_t(*)(int32_t,int32_t))IMPL(micro_os_tcsetpgrp))(fd,pgid); }
+int32_t micro_os_tcgetpgrp(int32_t fd) { return ((int32_t(*)(int32_t))IMPL(micro_os_tcgetpgrp))(fd); }
 int32_t micro_os_process_snapshot(micro_os_process_info_t *b, int32_t n) { return ((int32_t(*)(micro_os_process_info_t*,int32_t))IMPL(micro_os_process_snapshot))(b,n); }
 
 int32_t micro_os_spawn(const char *d, int32_t c, char **v) { return ((int32_t(*)(const char*,int32_t,char**))IMPL(micro_os_spawn))(d,c,v); }

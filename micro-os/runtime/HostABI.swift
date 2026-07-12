@@ -175,43 +175,40 @@ final class HostABI {
         }
     }
 
-    func registerKeyboardSink(callback: @escaping MicroOSKeyboardSinkCallback, context: UnsafeMutableRawPointer?) -> Int32 {
+    func enqueueHardwareKeyboardInput(phase: Int32, key: Int32, modifiers: UInt32, text: String) {
+        guard let keyboardPhase = MicroOSKeyboardEventPhase(rawValue: phase),
+              let keyboardKey = MicroOSKeyboardKey(rawValue: key)
+        else { return }
+        let event = MicroOSKeyboardEvent(
+            phase: keyboardPhase,
+            key: keyboardKey,
+            modifiers: MicroOSKeyboardModifiers(rawValue: modifiers),
+            text: text
+        )
+        DispatchQueue.main.async { [weak self] in
+            self?.kernel?.enqueueHardwareKeyboardInput(event)
+        }
+    }
+
+    func subscribeKeyboardDevice(callback: @escaping MicroOSKeyboardDeviceCallback, context: UnsafeMutableRawPointer?) -> Int32 {
+        let pid = currentPID()
         if Thread.isMainThread {
-            return kernel?.registerKeyboardSink(callback: callback, context: context) ?? -1
+            return kernel?.subscribeKeyboardDevice(pid: pid, callback: callback, context: context) ?? -1
         }
 
         let semaphore = DispatchSemaphore(value: 0)
         var result: Int32 = -1
         DispatchQueue.main.async { [weak self] in
-            result = self?.kernel?.registerKeyboardSink(callback: callback, context: context) ?? -1
+            result = self?.kernel?.subscribeKeyboardDevice(pid: pid, callback: callback, context: context) ?? -1
             semaphore.signal()
         }
         semaphore.wait()
         return result
     }
 
-    func unregisterKeyboardSink(id: Int32) {
+    func unsubscribeKeyboardDevice(id: Int32) {
         DispatchQueue.main.async { [weak self] in
-            self?.kernel?.unregisterKeyboardSink(id: id)
-        }
-    }
-
-    func dispatchKeyboardEvent(sinkID: Int32, phase: Int32, key: Int32, modifiers: UInt32, text: String) {
-        guard
-            let keyboardPhase = MicroOSKeyboardEventPhase(rawValue: phase),
-            let keyboardKey = MicroOSKeyboardKey(rawValue: key)
-        else { return }
-        let event = MicroOSKeyboardEvent(
-            key: keyboardKey,
-            modifiers: MicroOSKeyboardModifiers(rawValue: modifiers),
-            text: text
-        )
-        if Thread.isMainThread {
-            kernel?.dispatchKeyboardEvent(sinkID: sinkID, phase: keyboardPhase, event: event)
-            return
-        }
-        DispatchQueue.main.async { [weak self] in
-            self?.kernel?.dispatchKeyboardEvent(sinkID: sinkID, phase: keyboardPhase, event: event)
+            self?.kernel?.unsubscribeKeyboardDevice(id: id)
         }
     }
 
@@ -328,6 +325,76 @@ final class HostABI {
         var result = false
         DispatchQueue.main.async { [weak self] in
             result = self?.kernel?.signal(pid: pid, signal: signal) ?? false
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func setProcessGroup(pid: Int32, pgid: Int32) -> Bool {
+        if Thread.isMainThread {
+            return kernel?.setProcessGroup(pid: pid, pgid: pgid) ?? false
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.setProcessGroup(pid: pid, pgid: pgid) ?? false
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func getProcessGroup(pid: Int32) -> Int32 {
+        if Thread.isMainThread {
+            return kernel?.getProcessGroup(pid: pid) ?? -1
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Int32 = -1
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.getProcessGroup(pid: pid) ?? -1
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func setForegroundProcessGroup(ttyID: Int32, pgid: Int32) -> Bool {
+        if Thread.isMainThread {
+            return kernel?.setForegroundProcessGroup(ttyID: ttyID, pgid: pgid) ?? false
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.setForegroundProcessGroup(ttyID: ttyID, pgid: pgid) ?? false
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func getForegroundProcessGroup(ttyID: Int32) -> Int32 {
+        if Thread.isMainThread {
+            return kernel?.getForegroundProcessGroup(ttyID: ttyID) ?? -1
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Int32 = -1
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.getForegroundProcessGroup(ttyID: ttyID) ?? -1
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result
+    }
+
+    func setSignalIgnored(pid: Int32, signal: Int32, ignored: Bool) -> Bool {
+        if Thread.isMainThread {
+            return kernel?.setSignalIgnored(pid: pid, signal: signal, ignored: ignored) ?? false
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        DispatchQueue.main.async { [weak self] in
+            result = self?.kernel?.setSignalIgnored(pid: pid, signal: signal, ignored: ignored) ?? false
             semaphore.signal()
         }
         semaphore.wait()
@@ -454,7 +521,7 @@ final class HostABI {
         let parentPID = registeredParentPID ?? currentPID()
         let normalizedTTYID = currentTTYID(for: parentPID)
         if Thread.isMainThread {
-            return kernel?.launch(
+            let pid = kernel?.launch(
                 dylib: dylib,
                 argv: argv,
                 ttyID: normalizedTTYID,
@@ -462,6 +529,10 @@ final class HostABI {
                 reservedPID: childPID,
                 inheritFDs: false
             ) ?? -1
+            if pid > 0 {
+                kernel?.setForegroundProcessGroup(ttyID: normalizedTTYID, pgid: pid)
+            }
+            return pid
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -475,6 +546,9 @@ final class HostABI {
                 reservedPID: childPID,
                 inheritFDs: false
             ) ?? -1
+            if result > 0 {
+                self?.kernel?.setForegroundProcessGroup(ttyID: normalizedTTYID, pgid: result)
+            }
             semaphore.signal()
         }
         semaphore.wait()
@@ -862,6 +936,10 @@ final class HostABI {
     /// let the app's own `main` run its cleanup (close window, stop audio, …).
     func isTerminationRequestedForCurrentProcess() -> Bool {
         isTerminationRequested(pid: currentPID())
+    }
+
+    func currentTTYID() -> Int32 {
+        currentTTYID(for: currentPID())
     }
 
     private func currentTTYID(for pid: Int32) -> Int32 {

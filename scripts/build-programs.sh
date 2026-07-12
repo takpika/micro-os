@@ -193,11 +193,6 @@ build_swift() {  # out source...
     -o "$out"
 }
 
-build_microosabi() {  # out source...  (the ABI provider itself; no self-link)
-  out="$1"; shift
-  xcrun clang -dynamiclib "${CLANG_SDK[@]}" -I "$INCLUDE" "$@" -o "$out"
-}
-
 build_c() {  # out source...  (plain C, no CRT shim; links the host ABI framework)
   out="$1"; shift
   local abi_parent
@@ -2130,233 +2125,32 @@ build_fastfetch_xcframework() {
 
 build_vcocoa() {  # out appsrc
   out="$1"; appsrc="$2"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vcocoa"
-  local abi_parent
-  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
+  xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
   xcrun clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     "$rt/micro_os_appkit_shim.m" -o "$d/appkit.o"
   xcrun clang -c -fobjc-arc -DMICRO_OS_APPKIT_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     -Dmain=micro_os_appkit_user_main -include micro_os_crt.h "$appsrc" -o "$d/app.o"
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
     "$INCLUDE/MicroOS.swift" "$rt/VCocoaRuntime.swift" \
-    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/appkit.o" \
-    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
-    -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
-	  -o "$out"
-}
-
-build_libvwin32() {  # out
-  out="$1"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vwin32"
-  local abi_parent
-  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
-  xcrun clang -dynamiclib -DMICRO_OS_WIN32_SHIM=1 "${CLANG_SDK[@]}" \
-    -I "$INCLUDE" -I "$rt/include" \
-    "$rt/micro_os_win32_shim.c" \
-    -F "$abi_parent" -framework MicroOSABI \
-    -o "$out"
-}
-
-build_vwin32_launcher() {  # out
-  out="$1"; rt="$ROOT/runtimes/vwin32"
-  build_swift "$out" "$INCLUDE/MicroOS.swift" "$rt/VWin32Runtime.swift"
+    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/appkit.o" \
+    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" -Xlinker -undefined -Xlinker dynamic_lookup -o "$out"
 }
 
 build_vwin32() {  # out appsrc
   out="$1"; appsrc="$2"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vwin32"
-  local abi_parent vwin32_parent
-  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
-  vwin32_parent="$(framework_parent libvwin32 "$CURRENT_PLATFORM")" || return 1
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
   xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
+  xcrun clang -c "${CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_gui_shim.c" -o "$d/gui.o"
+  xcrun clang -c -DMICRO_OS_WIN32_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
+    "$rt/micro_os_win32_shim.c" -o "$d/win32.o"
   xcrun clang -c -DMICRO_OS_WIN32_SHIM=1 "${CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
     -DWinMain=micro_os_win32_user_main -include micro_os_crt.h "$appsrc" -o "$d/app.o"
   xcrun swiftc -emit-library -parse-as-library "${SWIFT_SDK[@]}" \
-    "$rt/VWin32ProgramRuntime.swift" \
-    "$d/app.o" "$d/crt.o" "$d/libc.o" \
-    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" \
-    -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
-    -F "$vwin32_parent" -Xlinker -framework -Xlinker libvwin32 \
-    -o "$out"
-}
-
-set_notepadpp_platform() {
-  case "$CURRENT_PLATFORM" in
-    iphoneos)
-      sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-      NPP_CLANG_SDK=(-isysroot "$sdk" -arch arm64 -miphoneos-version-min=16.3)
-      NPP_SWIFT_SDK=(-sdk "$sdk" -target arm64-apple-ios16.3)
-      ;;
-    iphonesimulator)
-      sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-      arch="$(uname -m)"
-      NPP_CLANG_SDK=(-isysroot "$sdk" -arch "$arch" -mios-simulator-version-min=16.3)
-      NPP_SWIFT_SDK=(-sdk "$sdk" -target "$arch-apple-ios16.3-simulator")
-      ;;
-    *) echo "unknown platform: $CURRENT_PLATFORM (use iphoneos | iphonesimulator)" >&2; return 1 ;;
-  esac
-}
-
-ensure_notepadpp_deps() {
-  local npp="$ROOT/.build/upstream/notepad-plus-plus"
-  local boost="$ROOT/.build/upstream/boost_1_90_0"
-  if [ ! -f "$npp/PowerEditor/visual.net/notepadPlus.vcxproj" ]; then
-    echo "notepadpp: missing upstream Notepad++ checkout at $npp" >&2
-    return 1
-  fi
-  if [ ! -f "$boost/boost/version.hpp" ]; then
-    echo "notepadpp: missing Boost 1.90.0 headers at $boost" >&2
-    echo "notepadpp: extract the official Boost 1.90.0 archive there before building" >&2
-    return 1
-  fi
-}
-
-notepadpp_vcxproj_sources() {  # vcxproj
-  local project="$1"
-  local base
-  base="$(cd "$(dirname "$project")" && pwd -P)"
-  perl -ne 'print "$1\n" if /<(?:ClCompile|_ClCompile\w*) Include="([^"]+)"/' "$project" | while IFS= read -r include; do
-    case "$include" in @\(*) continue ;; esac
-    local rel pattern
-    rel="${include//\\//}"
-    pattern="$base/$rel"
-    case "$pattern" in
-      *"*"*|*"?"*)
-        compgen -G "$pattern" | sort
-        ;;
-      *)
-        printf '%s\n' "$pattern"
-        ;;
-    esac
-  done | awk '!seen[$0]++'
-}
-
-notepadpp_compile_vcxproj() {  # outdir tag vcxproj cflags...
-  local outdir="$1"
-  local tag="$2"
-  local project="$3"
-  shift 3
-  mkdir -p "$outdir"
-  while IFS= read -r source; do
-    [ -n "$source" ] || continue
-    local ext hash obj
-    ext="${source##*.}"
-    hash="$(printf '%s' "$source" | shasum | awk '{print $1}')"
-    obj="$outdir/$tag-$hash.o"
-    case "$ext" in
-      c)
-        xcrun clang -c "${NPP_CLANG_SDK[@]}" "$@" "$source" -o "$obj"
-        ;;
-      cpp|cxx|cc|C)
-        xcrun clang++ -c "${NPP_CLANG_SDK[@]}" "$@" "$source" -o "$obj"
-        ;;
-      *)
-        echo "notepadpp: unsupported source extension: $source" >&2
-        return 1
-        ;;
-    esac
-    NPP_OBJECTS+=("$obj")
-  done < <(notepadpp_vcxproj_sources "$project")
-}
-
-build_notepadpp() {  # out
-  out="$1"; d="$(dirname "$out")"; rt="$ROOT/runtimes/vwin32"
-  local abi_parent vwin32_parent npp boost name module scintilla_version lexilla_version boost_regex_version
-  abi_parent="$(microosabi_framework_parent "$CURRENT_PLATFORM")" || return 1
-  vwin32_parent="$(framework_parent libvwin32 "$CURRENT_PLATFORM")" || return 1
-  ensure_notepadpp_deps || return 1
-  set_notepadpp_platform || return 1
-  npp="$ROOT/.build/upstream/notepad-plus-plus"
-  boost="$ROOT/.build/upstream/boost_1_90_0"
-  name="$(basename "$out" .dylib)"
-  module="$(printf '%s' "$name" | tr -c "[:alnum:]_" "_")"
-  scintilla_version="$(sed -n 's/^#define VERSION_SCINTILLA "\(.*\)"/\1/p' "$npp/scintilla/win32/ScintRes.rc" | tr -d '\r' | head -n 1)"
-  lexilla_version="$(sed -n 's/^#define VERSION_LEXILLA "\(.*\)"/\1/p' "$npp/lexilla/src/LexillaVersion.rc" | tr -d '\r' | head -n 1)"
-  boost_regex_version="$(sed -n 's/^#define BOOST_LIB_VERSION "\(.*\)"/\1/p' "$npp/boostregex/boost/version.hpp" | tr -d '\r' | head -n 1)"
-  NPP_OBJECTS=()
-
-  xcrun clang -c "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_crt.c" -o "$d/crt.o"
-  xcrun clang -c "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" "$CRT/micro_os_libc_shim.c" -o "$d/libc.o"
-  local resource_dir="$d/$name.resources"
-  rm -rf "$resource_dir"; mkdir -p "$resource_dir/vwin32-resources"
-  local rc_compiler
-  rc_compiler="$(xcrun --find llvm-rc 2>/dev/null || command -v llvm-rc)"
-  local rt_rel npp_rel resource_rel
-  rt_rel="${rt#$ROOT/}"
-  npp_rel="${npp#$ROOT/}"
-  resource_rel="${resource_dir#$ROOT/}"
-  "$rc_compiler" /nologo /c65001 "/fo$resource_rel/vwin32-resources/notepadpp-main.res" \
-    "/I$rt_rel/resource-include" \
-    "/I$npp_rel/PowerEditor/src" \
-    "/I$npp_rel/PowerEditor/src/ScintillaComponent" \
-    "$npp_rel/PowerEditor/src/Notepad_plus.rc"
-  "$rc_compiler" /nologo /c65001 "/fo$resource_rel/vwin32-resources/notepadpp-findreplace.res" \
-    "/I$rt_rel/resource-include" \
-    "/I$npp_rel/PowerEditor/src" \
-    "/I$npp_rel/PowerEditor/src/ScintillaComponent" \
-    "$npp_rel/PowerEditor/src/ScintillaComponent/FindReplaceDlg.rc"
-  xcrun clang++ -x c++ -c -DMICRO_OS_WIN32_SHIM=1 "${NPP_CLANG_SDK[@]}" -I "$INCLUDE" -I "$rt/include" \
-    "$rt/micro_os_win32_wmain_bridge.c" -o "$d/wmain-bridge.o"
-  xcrun clang++ -c "${NPP_CLANG_SDK[@]}" "$rt/micro_os_cxx_filesystem_compat.cpp" -o "$d/cxx-filesystem-compat.o"
-  NPP_OBJECTS+=("$d/crt.o" "$d/libc.o" "$d/wmain-bridge.o" "$d/cxx-filesystem-compat.o")
-
-  local common_flags=(
-    -std=c++20 -fdeclspec -fms-extensions
-    -Wno-ignored-attributes -Wno-deprecated-declarations
-    -Wno-unused-command-line-argument -Wno-deprecated-this-capture
-    -Wno-microsoft-cast -Wno-macro-redefined
-    -DMICRO_OS_WIN32_SHIM=1 -DWIN32 -D_WIN32 -D_WINDOWS
-    -DNOMINMAX -D_UNICODE -DUNICODE
-    -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE
-    -I "$INCLUDE" -I "$rt/include"
-    -include micro_os_crt.h -include windows.h
-  )
-  local scintilla_flags=(
-    "${common_flags[@]}"
-    -DDISABLE_D2D
-    -I "$npp/boostregex" -I "$boost"
-    -I "$npp/scintilla/include" -I "$npp/scintilla/src" -I "$npp/scintilla/win32"
-  )
-  local lexilla_flags=(
-    "${common_flags[@]}"
-    -DDISABLE_D2D
-    -I "$npp/boostregex" -I "$boost"
-    -I "$npp/scintilla/include"
-    -I "$npp/lexilla/include" -I "$npp/lexilla/src" -I "$npp/lexilla/lexlib" -I "$npp/lexilla/lexers"
-  )
-  local powereditor_flags=(
-    "${common_flags[@]}"
-    -D__MINGW32__ -DDISABLE_D2D -DwWinMain=micro_os_win32_user_wmain
-    "-DNPP_SCINTILLA_VERSION=\"$scintilla_version\""
-    "-DNPP_LEXILLA_VERSION=\"$lexilla_version\""
-    "-DNPP_BOOST_REGEX_VERSION=\"$boost_regex_version\""
-    -include commctrl.h -include shellapi.h -include shlobj.h -include wincrypt.h
-    -include "$npp/PowerEditor/gcc/gcc-fixes.h"
-    -I "$npp/boostregex" -I "$boost"
-    -I "$npp/scintilla/include" -I "$npp/scintilla/src" -I "$npp/scintilla/win32"
-    -I "$npp/lexilla/include" -I "$npp/lexilla/src" -I "$npp/lexilla/lexlib"
-  )
-  local dir
-  while IFS= read -r dir; do
-    powereditor_flags+=(-I "$dir")
-  done < <(find "$npp/PowerEditor/src" -type d | sort)
-
-  notepadpp_compile_vcxproj "$d/obj" scintilla "$npp/scintilla/win32/Scintilla.vcxproj" "${scintilla_flags[@]}"
-  notepadpp_compile_vcxproj "$d/obj" lexilla "$npp/lexilla/src/Lexilla.vcxproj" "${lexilla_flags[@]}"
-  notepadpp_compile_vcxproj "$d/obj" powereditor "$npp/PowerEditor/visual.net/notepadPlus.vcxproj" "${powereditor_flags[@]}"
-  notepadpp_compile_vcxproj "$d/obj" uchardet "$npp/PowerEditor/visual.net/notepadPlus.uchardet.targets" "${powereditor_flags[@]}"
-
-  xcrun swiftc -emit-library -parse-as-library "${NPP_SWIFT_SDK[@]}" \
-    "$rt/VWin32ProgramRuntime.swift" \
-    "${NPP_OBJECTS[@]}" \
-    -module-name "$module" \
-    -F "$abi_parent" -Xlinker -framework -Xlinker MicroOSABI \
-    -F "$vwin32_parent" -Xlinker -framework -Xlinker libvwin32 \
-    -Xlinker -lc++ -o "$out"
-
-  cp "$npp/PowerEditor/src/langs.model.xml" "$resource_dir/langs.model.xml"
-  cp "$npp/PowerEditor/src/stylers.model.xml" "$resource_dir/stylers.model.xml"
-  cp -R "$npp/PowerEditor/src/icons" "$resource_dir/vwin32-resources/icons"
+    "$INCLUDE/MicroOS.swift" "$rt/VWin32Runtime.swift" \
+    "$d/app.o" "$d/crt.o" "$d/libc.o" "$d/gui.o" "$d/win32.o" \
+    -module-name "$(basename "$out" .dylib | tr -c "[:alnum:]_" "_")" -Xlinker -undefined -Xlinker dynamic_lookup -o "$out"
 }
 
 # Seed a default init.conf into payload/etc when one doesn't exist yet.
@@ -2460,8 +2254,7 @@ build_one() {
     # against this framework, which the app loads globally at boot. On device dyld
     # won't resolve those flat-namespace symbols against the main executable, only
 	    # against loaded dylibs — so the ABI must live in one.
-	    MicroOSABI)            build_xcf MicroOSABI build_microosabi "$CRT/micro_os_abi.c" "$CRT/micro_os_gui_shim.c" ;;
-	    libvwin32)             build_xcf libvwin32 build_libvwin32 ;;
+    MicroOSABI)            build_xcf MicroOSABI build_c "$CRT/micro_os_abi.c" ;;
 	    wm)                    build_wm_xcframework ;;
     toybox)                build_toybox_xcframework ;;
     gzip|more)             build_toybox_xcframework ;;
@@ -2489,9 +2282,7 @@ build_one() {
     SwiftOverlayProgram)   build_xcf SwiftOverlayProgram build_swift "$ROOT/samples/SwiftOverlayProgram.swift" "$INCLUDE/MicroOS.swift" ;;
     TerminalProgram)       build_xcf TerminalProgram build_swift "$ROOT/samples/TerminalProgram.swift" "$ROOT/micro-os/kernel/KeyboardEvent.swift" "$ROOT/micro-os/ui/MicroOSKeyboardAccessoryBar.swift" "$INCLUDE/MicroOS.swift" ;;
     vcocoa-todo)           build_xcf vcocoa-todo build_vcocoa "$ROOT/samples/vcocoa-todo.m" ;;
-	    vwin32)                build_xcf vwin32 build_vwin32_launcher ;;
-	    vwin32-todo)           build_xcf vwin32-todo build_vwin32 "$ROOT/samples/vwin32-todo.c" ;;
-    notepadpp)             build_xcf notepadpp build_notepadpp ;;
+    vwin32-todo)           build_xcf vwin32-todo build_vwin32 "$ROOT/samples/vwin32-todo.c" ;;
     *)
       # Fall back to a local (untracked) recipe: a build_<name> function defined
       # by a drop-in under scripts/local/ (see below). Keeps private programs out
@@ -2516,8 +2307,8 @@ done
 
 # Program groups. The build-system.sh / build-samples.sh entry points just set
 # GROUP and delegate here; this script can also be run directly (GROUP=all).
-SYSTEM_PROGRAMS="MicroOSABI libvwin32 init wm toybox"
-SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32 vwin32-todo"
+SYSTEM_PROGRAMS="MicroOSABI init wm toybox"
+SAMPLE_PROGRAMS="demo-program file-fallback-program stdin-program SwiftOverlayProgram TerminalProgram vcocoa-todo vwin32-todo"
 OPTIONAL_PROGRAMS="curl ifconfig ping bind-dns-tools zip unzip zlib xz bzip2 less awk traceroute whois uptime ps pkill fastfetch"
 case "${GROUP:-all}" in
   system)  GROUP_PROGRAMS="$SYSTEM_PROGRAMS" ;;
